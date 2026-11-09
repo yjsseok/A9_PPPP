@@ -61,3 +61,7 @@ python3 ntkfw.py pack SJCAM001.bin work/part0_sta.bin new/SJCAM001.bin
 3. 문제가 생기면 원본 `SJCAM001.bin`으로 SD카드 업데이트를 하면 원래대로 돌아갑니다. 부팅이 되는 한 가능합니다.
 
 SD카드는 FAT32로 포맷하고, 업데이트 중에는 전원을 끊지 마세요. 업데이트가 끝나면 카드에서 `.bin` 파일을 지웁니다.
+
+## 함수·명령 목록
+
+`M20_FUNCTIONS.md`: HTTP 명령 61개, UART 콘솔 명령 400여 개, 이름이 확인된 함수 3,000여 개와 수정 후보를 정리했습니다. 다시 만들려면 `python3 catalog.py work/part0.bin`을 실행합니다(맨 위의 수정 후보 표는 직접 작성한 부분).
