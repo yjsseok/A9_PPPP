@@ -49,6 +49,7 @@ python3 patch_station.py work/part0.bin work/part0_sta.bin --ssid '공유기이�
 python3 ntkfw.py pack SJCAM001.bin work/part0_sta.bin new/SJCAM001.bin
 ```
 
+- **실기 확인됨**: 패치 후 카메라 AP가 사라지고, 집 공유기(2.4GHz WPA2)에 접속해 DHCP로 IP를 받았습니다. 집 네트워크에서 HTTP 명령(`cmd=3012`)이 응답하고 80, 554(RTSP), 3333 포트가 열려 있었습니다.
 - 결과 파일에는 SSID와 비밀번호가 평문으로 들어갑니다. 공유하거나 커밋하지 마세요.
 - 공유기는 2.4GHz와 WPA2-PSK(AES)여야 합니다.
 - 원리: 와이파이 시작 함수(`SetupExe_OnWifiStart`, `0x801d8d70`)는 원래부터 `SysGetFlag(0x8b)`가 1이면 스테이션으로 동작하는 분기를 갖고 있습니다. 하지만 이 값은 UART 디버그 명령(`wifi mode 1`)으로만 바뀌고, 스테이션용 SSID와 비밀번호 버퍼도 비어 있습니다. 패치는 이 함수 안에서 모드를 읽는 곳을 1로 고정하고, 함수 전용 디버그 문자열 자리(`0x803b0e2c`~)에 SSID와 비밀번호를 넣어 그 위치를 가리키게 합니다. 설정값 자체는 건드리지 않으므로, 원본 펌웨어로 되돌리면 흔적이 남지 않습니다.
