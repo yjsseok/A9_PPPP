@@ -36,8 +36,6 @@ ALGO_LZ77 = 9
 FW_HDR_GUID = bytes.fromhex("90be2788cd36c24fa98773a8484e84b1")
 FW_HDR_FIXED = 0x1C  # GUID(16) + size(4) + checksum(4) + count(4)
 FW_HDR_CHKSUM_OFF = 0x14
-INNER_MAGIC_OFF = 0x6C  # 0x55AA marker, checksum word follows at 0x6E
-INNER_CHKSUM_OFF = 0x6E
 
 LZ_MAX_OFFSET = 100000
 LZ_CHAIN_LIMIT = 512  # 512 already packs SJCAM M20 V1.3.1 part0 smaller than stock
@@ -46,23 +44,41 @@ LZ_CHAIN_LIMIT = 512  # 512 already packs SJCAM M20 V1.3.1 part0 smaller than st
 # ---------------------------------------------------------------- checksum
 
 def memcheck16(data, ignore_off):
-    """Return the value that, stored at ignore_off, makes the block sum to 0."""
-    if len(data) % 2:
-        data = bytes(data) + b"\0"
+    """Return the value that, stored at ignore_off, makes the block sum to 0.
+
+    Like Novatek's routine, an odd trailing byte is not part of the sum.
+    """
     n = len(data) // 2
-    words = struct.unpack("<%dH" % n, data)
+    words = struct.unpack_from("<%dH" % n, data)
     total = sum(words) - words[ignore_off // 2] + (n - 1) * n // 2
     return (-total) & 0xFFFF
 
 
+def inner_checksum_offset(raw):
+    """Offset of the checksum word inside decompressed data, or None.
+
+    Same rules and order as NTKFWinfo: FFFF@0x6C + 55AA@0x46C -> 0x46E,
+    55AA@0x6C -> 0x6E, 55AA@0x16C -> 0x16E, 55AA@0x26C -> 0x26E.
+    """
+    def at(off, val):
+        return raw[off:off + 2] == val
+    if at(0x6C, b"\xff\xff") and at(0x46C, b"\x55\xaa"):
+        return 0x46E
+    for magic in (0x6C, 0x16C, 0x26C):
+        if at(magic, b"\x55\xaa"):
+            return magic + 2
+    return None
+
+
 def has_inner_checksum(raw):
-    return raw[INNER_MAGIC_OFF:INNER_MAGIC_OFF + 2] == b"\x55\xaa"
+    return inner_checksum_offset(raw) is not None
 
 
 def fix_inner_checksum(raw):
     raw = bytearray(raw)
-    if has_inner_checksum(raw):
-        struct.pack_into("<H", raw, INNER_CHKSUM_OFF, memcheck16(raw, INNER_CHKSUM_OFF))
+    off = inner_checksum_offset(raw)
+    if off is not None:
+        struct.pack_into("<H", raw, off, memcheck16(raw, off))
     return bytes(raw)
 
 
@@ -109,15 +125,20 @@ def lz_decompress(src, outsize):
         if s != marker:
             out.append(s)
             continue
+        if i >= n:
+            raise ValueError("LZ stream ends after a marker byte")
         if src[i] == 0:
             out.append(marker)
             i += 1
             continue
-        length, i = _read_varsize(src, i)
-        offset, i = _read_varsize(src, i)
+        try:
+            length, i = _read_varsize(src, i)
+            offset, i = _read_varsize(src, i)
+        except IndexError:
+            raise ValueError("LZ stream ends inside a match token")
         start = len(out) - offset
-        if start < 0:
-            raise ValueError("LZ offset points before start of output")
+        if offset == 0 or start < 0:
+            raise ValueError("invalid LZ offset %d" % offset)
         if offset >= length:
             out += out[start:start + length]
         else:
@@ -126,8 +147,14 @@ def lz_decompress(src, outsize):
     return bytes(out)
 
 
-def lz_compress(data, progress=None):
-    """BCL-compatible LZ77 encoder (hash chains on 3-byte prefixes)."""
+def lz_compress(data, progress=None, compat=False):
+    """BCL-compatible LZ77 encoder (hash chains on 3-byte prefixes).
+
+    compat=True mimics the stock encoder's output shape: matches are at most
+    16384 bytes and never overlap their own output. Slightly larger, but uses
+    only token forms already present in stock firmware.
+    """
+    len_cap = 16384 if compat else None
     n = len(data)
     hist = [0] * 256
     for b in data:
@@ -156,17 +183,18 @@ def lz_compress(data, progress=None):
         if i + 3 < n:
             j = heads.get(mv[i:i + 3].tobytes(), -1)
             chain = 0
-            max_len = n - i
+            limit = n - i if len_cap is None else min(n - i, len_cap)
             while j >= 0 and i - j < LZ_MAX_OFFSET and chain < LZ_CHAIN_LIMIT:
+                max_len = limit if not compat else min(limit, i - j)
                 # cheap reject: a longer match must also agree at index best_len
-                if data[j + best_len] == data[i + best_len]:
+                if max_len >= 4 and best_len < max_len and data[j + best_len] == data[i + best_len]:
                     k = 3
                     while k < max_len and data[j + k] == data[i + k]:
                         k += 1
                     if k > best_len:
                         best_len = k
                         best_off = i - j
-                        if k == max_len:
+                        if k == limit:
                             break
                 j = prev[j]
                 chain += 1
@@ -214,8 +242,8 @@ def bcl_decompress(buf, blk):
     return raw
 
 
-def build_bcl(raw, progress=None):
-    comp = lz_compress(raw, progress)
+def build_bcl(raw, progress=None, compat=False):
+    comp = lz_compress(raw, progress, compat)
     if lz_decompress(comp, len(raw)) != raw:
         raise RuntimeError("compressor self-check failed")
     pad = (-len(comp)) % 4
@@ -260,15 +288,31 @@ def check_fw(buf, fw, raws=None):
                     blk["chk"] == blk["chk_calc"]))
         res.append(("part%d packed size is 4-byte aligned" % pid, blk["csize"] % 4 == 0))
         raw = raws[pid] if raws else bcl_decompress(buf, blk)
-        if has_inner_checksum(raw):
-            inner = struct.unpack_from("<H", raw, INNER_CHKSUM_OFF)[0]
-            calc = memcheck16(raw, INNER_CHKSUM_OFF)
-            res.append(("part%d inner checksum 0x%04x (calc 0x%04x)" % (pid, inner, calc), inner == calc))
+        off = inner_checksum_offset(raw)
+        if off is not None:
+            inner = struct.unpack_from("<H", raw, off)[0]
+            calc = memcheck16(raw, off)
+            res.append(("part%d inner checksum @0x%x 0x%04x (calc 0x%04x)" % (pid, off, inner, calc),
+                        inner == calc))
     h = fw["hdr"]
     if h:
         res.append(("NVTPACK_FW_HDR checksum 0x%04x (calc 0x%04x)" % (h["chk"], h["chk_calc"]),
                     h["chk"] == h["chk_calc"]))
         res.append(("NVTPACK_FW_HDR is 4-byte aligned", h["off"] % 4 == 0))
+        res.append(("NVTPACK_FW_HDR size matches entry count",
+                    h["size"] == FW_HDR_FIXED + 12 * h["count"]))
+        pos = h["off"] + h["size"]
+        for e in fw["entries"]:
+            blk_len = e["bcl"]["end"] - e["start"]
+            res.append(("part%d entry size 0x%x equals block length 0x%x" % (e["id"], e["size"], blk_len),
+                        e["size"] == blk_len))
+            res.append(("part%d follows previous data (0x%x, expected 0x%x)" % (e["id"], e["start"], pos),
+                        e["start"] == pos))
+            pos = e["start"] + e["size"] + ((-e["size"]) % 4)
+        if fw["entries"]:
+            last_end = fw["entries"][-1]["bcl"]["end"]
+            res.append(("file ends at last partition (0x%x, file size 0x%x)" % (last_end, len(buf)),
+                        len(buf) == last_end))
     return res
 
 
@@ -346,8 +390,13 @@ def cmd_pack(args):
     fixed = fix_inner_checksum(raw)
     if fixed != raw:
         print("part0 inner checksum updated")
-    blk = build_bcl(fixed, _progress)
+    blk = build_bcl(fixed, _progress, args.compat)
     out = rebuild(buf, fw, blk)
+    if len(out) > len(buf) and not args.allow_larger:
+        print("result is 0x%x bytes larger than the input firmware; the updater rejects files that "
+              "exceed the flash partition. Use --allow-larger only if you know the limit."
+              % (len(out) - len(buf)))
+        return 1
     with open(args.out, "wb") as f:
         f.write(out)
     print("wrote %s (0x%x bytes, part0 packed 0x%x -> 0x%x)" %
@@ -382,7 +431,12 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("info"); p.add_argument("fw"); p.set_defaults(fn=cmd_info)
     p = sub.add_parser("unpack"); p.add_argument("fw"); p.add_argument("outdir"); p.set_defaults(fn=cmd_unpack)
-    p = sub.add_parser("pack"); p.add_argument("fw"); p.add_argument("part0"); p.add_argument("out"); p.set_defaults(fn=cmd_pack)
+    p = sub.add_parser("pack"); p.add_argument("fw"); p.add_argument("part0"); p.add_argument("out")
+    p.add_argument("--compat", action="store_true",
+                   help="stock-like LZ tokens: max match 16384, no overlapping copies")
+    p.add_argument("--allow-larger", action="store_true",
+                   help="write the result even if it is larger than the input firmware")
+    p.set_defaults(fn=cmd_pack)
     p = sub.add_parser("verify"); p.add_argument("fw"); p.add_argument("refdir", nargs="?"); p.set_defaults(fn=cmd_verify)
     args = ap.parse_args(argv)
     return args.fn(args)

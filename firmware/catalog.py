@@ -140,7 +140,7 @@ def named_functions(img):
 
 
 def md_escape(s):
-    return s.replace("|", "\\|").replace("%", "%")
+    return s.replace("|", "\\|")
 
 
 def main():
@@ -171,7 +171,8 @@ def main():
     funcs = named_functions(img)
     by_mod = collections.defaultdict(list)
     for addr, name in funcs:
-        by_mod[name.lstrip("x").split("_")[0]].append((addr, name))
+        base = name[1:] if re.match(r"x[A-Z]", name) else name  # xFoo_Bar -> Foo
+        by_mod[base.split("_")[0]].append((addr, name))
     p("## 이름이 확인된 함수 (%d개, 모듈별)\n" % len(funcs))
     p("디버그 문자열로 추정한 이름입니다. 일부는 함수가 아니라 태스크·플래그 ID입니다.\n")
     for mod in sorted(by_mod, key=str.lower):
