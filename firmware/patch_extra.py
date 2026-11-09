@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--live720]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -9,6 +9,14 @@
 --reconnect  Station mode keeps retrying. The reconnect timer and the
              post-init helper give up after 10 failed attempts
              (`slti a0, v1, 10`); the limit becomes 0x7fff.
+--leds-off   Status LEDs (GPIO 0x5a/0x5c/0x5d, e.g. yellow and top blue)
+             stay off after boot. The only routine that lights them
+             (0x800c9154, driven by LED setting flag 0x51) clears the pins
+             instead of setting them. Lights controlled by hardware (e.g. a
+             charge LED wired to the charger chip) are not affected.
+--mute       No UI sounds (key beeps, shutter, power on/off). The sound
+             task's only call to _GxSound_Play (0x8029569c) is removed; the
+             task still acknowledges each request, so callers don't wait.
 --live720    Wi-Fi live-view sub-stream (RTSP) for every recording size
              that has one (2.5K .. 720p rows of the dual-stream table at
              0x8051ae44): 640x360 -> 1280x720, target 512000 B/s (~4 Mbps,
@@ -29,6 +37,10 @@ SLTI_10 = 0x2864000A         # slti a0, v1, 0xa
 SLTI_MAX = 0x28647FFF        # slti a0, v1, 0x7fff
 
 LED_OFF = [(0x800C90A4, JAL_GPIO_SET, JAL_GPIO_CLEAR)]
+STATUS_LEDS_OFF = [(a, JAL_GPIO_SET, JAL_GPIO_CLEAR) for a in (
+    0x800C9164, 0x800C916C, 0x800C91D4, 0x800C91DC, 0x800C91E4, 0x800C9200, 0x800C9210, 0x800C923C)]
+JAL_GXSOUND_PLAY = 0x0C0A54BF  # jal 0x802952fc
+MUTE = [(0x8029569C, JAL_GXSOUND_PLAY, 0x00000000)]
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
 # dual-stream table: row r main width at 0x8051ae44 + r*0x34,
@@ -53,8 +65,14 @@ def _put(img, addr, old, new, what):
     return 1
 
 
-def apply(img, led_off=False, reconnect=False, live720=False):
+def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False):
     n = 0
+    if leds_off:
+        for a, o, w in STATUS_LEDS_OFF:
+            n += _put(img, a, o, w, "status LED on")
+    if mute:
+        for a, o, w in MUTE:
+            n += _put(img, a, o, w, "UI sound play")
     if led_off:
         for a, o, w in LED_OFF:
             n += _put(img, a, o, w, "wifi LED on")
@@ -80,12 +98,14 @@ def main(argv=None):
     ap.add_argument("--led-off", action="store_true")
     ap.add_argument("--reconnect", action="store_true")
     ap.add_argument("--live720", action="store_true")
+    ap.add_argument("--leds-off", action="store_true")
+    ap.add_argument("--mute", action="store_true")
     a = ap.parse_args(argv)
-    if not (a.led_off or a.reconnect or a.live720):
+    if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
-    n = apply(img, a.led_off, a.reconnect, a.live720)
+    n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
