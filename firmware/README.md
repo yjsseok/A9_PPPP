@@ -38,6 +38,21 @@ python3 ntkfw.py verify new/SJCAM001.bin [work/]     # 다시 읽어서 검증
 - part0 크기가 달라지면 거부합니다. 코드가 고정 주소에 적재되기 때문입니다.
 - 압축기는 원본 압축기와 바이트 단위로 같지는 않지만, 같은 BCL LZ77 형식이고 결과가 원본보다 작습니다. 펌웨어의 업데이트 루틴은 파티션 크기를 넘는 파일을 거부합니다.
 
+## 스테이션 모드 패치 (`patch_station.py`)
+
+M20이 자기 AP를 만드는 대신 **집 공유기에 접속**하도록 하는 패치입니다.
+
+```sh
+python3 ntkfw.py unpack SJCAM001.bin work/
+python3 patch_station.py work/part0.bin work/part0_sta.bin --ssid '공유기이름' --passphrase '비밀번호'
+python3 ntkfw.py pack SJCAM001.bin work/part0_sta.bin new/SJCAM001.bin
+```
+
+- 결과 파일에는 SSID와 비밀번호가 평문으로 들어갑니다. 공유하거나 커밋하지 마세요.
+- 공유기는 2.4GHz와 WPA2-PSK(AES)여야 합니다.
+- 원리: 와이파이 시작 함수(`SetupExe_OnWifiStart`, `0x801d8d70`)는 원래부터 `SysGetFlag(0x8b)`가 1이면 스테이션으로 동작하는 분기를 갖고 있습니다. 하지만 이 값은 UART 디버그 명령(`wifi mode 1`)으로만 바뀌고, 스테이션용 SSID와 비밀번호 버퍼도 비어 있습니다. 패치는 이 함수 안에서 모드를 읽는 곳을 1로 고정하고, 함수 전용 디버그 문자열 자리(`0x803b0e2c`~)에 SSID와 비밀번호를 넣어 그 위치를 가리키게 합니다. 설정값 자체는 건드리지 않으므로, 원본 펌웨어로 되돌리면 흔적이 남지 않습니다.
+- 스크립트는 바꾸기 전에 각 위치의 원래 명령어를 확인하고, 다르면 중단합니다(V1.3.1 전용).
+
 ## 적용 순서 (안전 절차)
 
 1. **무수정 왕복 테스트**: 아무것도 고치지 않은 `part0.bin`으로 `pack` → SD카드 루트에 `SJCAM001.bin`으로 복사 → 업데이트 → 정상 부팅과 동작 확인.
