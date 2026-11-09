@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M20 조작</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2128;--muted:#5f6670;--line:#dfe2e7;--accent:#2563eb;--accent-text:#fff;--danger:#c62828;--ok:#2e7d32}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2127;--text:#e7e9ee;--muted:#9aa1ab;--line:#30343c;--accent:#4f83f1;--accent-text:#fff;--danger:#ef5350;--ok:#66bb6a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:560px;margin:0 auto;padding:12px 16px 40px}
+h1{font-size:20px;margin:8px 0 12px}
+h2{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button,select{font:inherit;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--text);width:100%}
+button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+button.stop{background:var(--danger);color:#fff;border-color:var(--danger)}
+button:disabled{opacity:.5}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0}
+dt{color:var(--muted)}dd{margin:0;font-variant-numeric:tabular-nums}
+.row{display:grid;grid-template-columns:1fr 150px;gap:8px;align-items:center;margin-bottom:8px}
+.url{font-family:ui-monospace,Menlo,monospace;font-size:13px;word-break:break-all;background:var(--bg);padding:8px;border-radius:8px;border:1px solid var(--line);margin:0 0 8px}
+#log{font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:0;color:var(--muted)}
+.ok{color:var(--ok)}.err{color:var(--danger)}
+a{color:var(--accent)}
+.note{font-size:13px;color:var(--muted);margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+<h1>M20 조작</h1>
+
+<section>
+  <h2>상태</h2>
+  <dl>
+    <dt>카메라</dt><dd id="s-ver">-</dd>
+    <dt>배터리</dt><dd id="s-batt">-</dd>
+    <dt>SD 남은 용량</dt><dd id="s-free">-</dd>
+    <dt>녹화 시간</dt><dd id="s-rec">-</dd>
+  </dl>
+  <p class="note"><button id="b-refresh" style="width:auto">새로고침</button></p>
+</section>
+
+<section>
+  <h2>녹화 · 모드</h2>
+  <div class="grid">
+    <button class="primary" id="b-rec-on">녹화 시작</button>
+    <button class="stop" id="b-rec-off">녹화 정지</button>
+    <button id="b-movie">동영상 모드</button>
+    <button id="b-photo">사진 모드</button>
+    <button id="b-shot">사진 찍기</button>
+    <button id="b-time">폰 시간으로 맞추기</button>
+  </div>
+  <p class="note">녹화는 동영상 모드에서만 됩니다. 사진 찍기는 사진 모드에서만 됩니다.</p>
+</section>
+
+<section>
+  <h2>설정</h2>
+  <div class="row"><label for="c-2003">루프 녹화</label><select id="c-2003" data-cmd="2003"></select></div>
+  <div class="row"><label for="c-2008">날짜·시간 표시</label><select id="c-2008" data-cmd="2008"></select></div>
+  <div class="row"><label for="c-2007">녹음</label><select id="c-2007" data-cmd="2007"></select></div>
+  <div class="row"><label for="c-2002">녹화 해상도 번호</label><select id="c-2002" data-cmd="2002"></select></div>
+  <p class="note">값 이름이 확인되지 않은 항목은 번호로 표시합니다. 해상도는 카메라 메뉴와 대조해 확인하세요. 현재 값은 새로고침 때 카메라에서 읽어 옵니다.</p>
+</section>
+
+<section>
+  <h2>실시간 보기 · 파일</h2>
+  <p class="url" id="rtsp">-</p>
+  <div class="grid">
+    <button id="b-copy">주소 복사</button>
+    <a id="a-vlc" href="#"><button>VLC로 열기</button></a>
+  </div>
+  <p class="note">브라우저는 RTSP를 직접 재생하지 못합니다. VLC 앱에서 위 주소를 여세요. 녹화 파일: <a href="/DCIM/">DCIM 폴더</a></p>
+</section>
+
+<section>
+  <h2>기록</h2>
+  <pre id="log"></pre>
+</section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var logEl = $("log");
+
+  function log(msg, cls) {
+    var line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = new Date().toTimeString().slice(0, 8) + "  " + msg;
+    logEl.insertBefore(line, logEl.firstChild);
+  }
+
+  // The camera's web server handles one request at a time, so queue them.
+  var queue = Promise.resolve();
+  function cmd(n, extra) {
+    var url = "/?custom=1&cmd=" + n + (extra || "");
+    var run = function () {
+      var ctl = window.AbortController ? new AbortController() : null;
+      var t = ctl ? setTimeout(function () { ctl.abort(); }, 6000) : null;
+      return fetch(url, { cache: "no-store", signal: ctl ? ctl.signal : undefined })
+        .then(function (r) { return r.text(); })
+        .then(function (text) {
+          if (t) clearTimeout(t);
+          var xml = new DOMParser().parseFromString(text, "text/xml");
+          var pick = function (tag) {
+            return Array.prototype.map.call(xml.getElementsByTagName(tag), function (e) { return e.textContent; });
+          };
+          return { cmd: n, status: pick("Status"), value: pick("Value"), string: pick("String"), cmds: pick("Cmd") };
+        })
+        .catch(function (e) {
+          if (t) clearTimeout(t);
+          return { cmd: n, error: String(e && e.name === "AbortError" ? "응답 없음" : e) };
+        });
+    };
+    var p = queue.then(run);
+    queue = p.then(function () {}, function () {});
+    return p;
+  }
+
+  function report(label, r) {
+    if (r.error) { log(label + ": 실패 (" + r.error + ")", "err"); return false; }
+    var st = r.status.length ? parseInt(r.status[0], 10) : 0;
+    if (st < 0) { log(label + ": 카메라가 거부 (코드 " + st + ")", "err"); return false; }
+    log(label + ": 완료", "ok");
+    return true;
+  }
+
+  var options = {
+    "2003": [["0", "꺼짐"], ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]],
+    "2008": [["0", "꺼짐"], ["1", "켜짐"]],
+    "2007": [["0", "꺼짐"], ["1", "켜짐"]],
+    "2002": []
+  };
+  for (var i = 0; i < 12; i++) options["2002"].push([String(i), String(i)]);
+
+  Array.prototype.forEach.call(document.querySelectorAll("select[data-cmd]"), function (sel) {
+    var c = sel.getAttribute("data-cmd");
+    options[c].forEach(function (o) {
+      var op = document.createElement("option");
+      op.value = o[0]; op.textContent = o[1];
+      sel.appendChild(op);
+    });
+    sel.addEventListener("change", function () {
+      cmd(c, "&par=" + sel.value).then(function (r) { report(sel.labels && sel.labels[0] ? sel.labels[0].textContent : c, r); });
+    });
+  });
+
+  function refresh() {
+    cmd(3012).then(function (r) {
+      $("s-ver").textContent = r.error ? "연결 안 됨" : (r.string.slice(1, 3).join(" ") || "-");
+      if (r.error) log("카메라에 연결할 수 없습니다", "err");
+    });
+    cmd(3019).then(function (r) { if (!r.error) $("s-batt").textContent = (r.value[0] || r.status[0] || "-") + " 단계"; });
+    cmd(3017).then(function (r) {
+      if (r.error) return;
+      var v = parseFloat(r.value[0] || r.status[0]);
+      $("s-free").textContent = isNaN(v) ? "-" : (v / 1073741824).toFixed(1) + " GB";
+    });
+    cmd(2016).then(function (r) {
+      if (r.error) return;
+      var s = parseInt(r.value[0] || r.status[0], 10);
+      $("s-rec").textContent = isNaN(s) ? "-" : Math.floor(s / 60) + "분 " + (s % 60) + "초";
+    });
+    cmd(3014).then(function (r) {
+      if (r.error) return;
+      for (var k = 0; k < r.cmds.length; k++) {
+        var sel = document.querySelector('select[data-cmd="' + r.cmds[k] + '"]');
+        if (sel) sel.value = r.status[k];
+      }
+    });
+  }
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  $("b-refresh").onclick = refresh;
+  $("b-rec-on").onclick = function () { cmd(2001, "&par=1").then(function (r) { report("녹화 시작", r); }); };
+  $("b-rec-off").onclick = function () { cmd(2001, "&par=0").then(function (r) { report("녹화 정지", r); }); };
+  $("b-movie").onclick = function () { cmd(3001, "&par=1").then(function (r) { report("동영상 모드", r); }); };
+  $("b-photo").onclick = function () { cmd(3001, "&par=0").then(function (r) { report("사진 모드", r); }); };
+  $("b-shot").onclick = function () { cmd(1001).then(function (r) { report("사진 찍기", r); }); };
+  $("b-time").onclick = function () {
+    var d = new Date();
+    var date = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    var time = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    cmd(3005, "&str=" + date).then(function (r) { report("날짜 " + date, r); });
+    cmd(3006, "&str=" + time).then(function (r) { report("시간 " + time, r); });
+  };
+
+  var rtsp = "rtsp://" + location.hostname + "/xxx.mov";
+  $("rtsp").textContent = rtsp;
+  $("a-vlc").href = /Android/i.test(navigator.userAgent)
+    ? "intent://" + location.hostname + "/xxx.mov#Intent;scheme=rtsp;package=org.videolan.vlc;type=video/*;end"
+    : "vlc://" + rtsp;
+  $("b-copy").onclick = function () {
+    var done = function () { log("주소를 복사했습니다", "ok"); };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(rtsp).then(done, function () { window.prompt("주소를 복사하세요", rtsp); });
+    } else {
+      window.prompt("주소를 복사하세요", rtsp);
+    }
+  };
+
+  refresh();
+})();
+</script>
+</body>
+</html>

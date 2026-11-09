@@ -69,3 +69,22 @@ SD카드는 FAT32로 포맷하고, 업데이트 중에는 전원을 끊지 마�
 `M20_FUNCTIONS.md`: HTTP 명령 61개, UART 콘솔 명령 400여 개, 이름이 확인된 함수 3,000여 개와 수정 후보를 정리했습니다. 다시 만들려면 `python3 catalog.py work/part0.bin`을 실행합니다(맨 위의 수정 후보 표는 직접 작성한 부분).
 
 - `ANALYSIS.md`: 감시카메라용 개선 항목(자동 와이파이, 자동 녹화, 재접속, 비상 복귀, MJPEG, USB 웹캠, 비트레이트) 분석과 패치 설계
+
+## 추가 패치 (`patch_extra.py`)
+
+스테이션 패치를 적용한 part0(또는 원본)에 이어서 적용합니다. 바꾸기 전에 원래 값을 확인합니다.
+
+```sh
+python3 patch_extra.py work/part0_sta.bin work/part0_x.bin --led-off --reconnect [--live720]
+python3 ntkfw.py pack SJCAM001.bin work/part0_x.bin new/SJCAM001.bin
+```
+
+| 옵션 | 내용 |
+|---|---|
+| `--led-off` | 파란(와이파이) 표시등을 항상 끔. GPIO `0x5b`를 켜는 유일한 함수(`0x800c9094`)가 끄도록 변경 |
+| `--reconnect` | 스테이션 재접속 10회 제한(`0x801c8214`, `0x801c7f24`)을 0x7fff로 |
+| `--live720` | 와이파이 실시간 보조 스트림(RTSP)을 640×360 → 1280×720, 목표 512000B/s(약 4Mbps). 이중 스트림 표 `0x8051ae44`의 2.5K~720p 행 |
+
+## 웹 조작 페이지 (`web/M20.HTM`)
+
+SD카드 맨 위 폴더에 넣으면 카메라 웹서버가 그대로 보여 줍니다(`http://카메라IP/M20.HTM`). 펌웨어 수정 없이 동작하며, 녹화 시작·정지, 모드 전환, 폰 시간으로 시계 맞추기, 루프 녹화·날짜 표시·녹음·해상도 설정, RTSP 주소와 VLC 열기, DCIM 폴더 링크를 제공합니다. 포맷·초기화·삭제 명령은 넣지 않았습니다.
