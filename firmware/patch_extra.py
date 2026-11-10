@@ -255,10 +255,10 @@ CAVE3_CODE = REBOOT_PREFIX + [
     0x27BDFFE0,  # 9  addiu sp, sp, -0x20
     0xAFBF001C,  # 10 sw    ra, 0x1c(sp)
     0xAFA90018,  # 11 sw    t1, 0x18(sp)
-    0x3C08805A,  # 12 lui   t0, 0x805a         --binclean: delete the update file now
-    0x8D0A21D4,  # 13 lw    t2, 0x21d4(t0)     (the file system is fully up by now)
-    0x11400004,  # 14 beqz  t2, 19
-    0xAD0021D4,  # 15 sw    zero, 0x21d4(t0)   (delay slot) only once
+    0x240A0008,  # 12 addiu t2, zero, 8        --binclean: on the first try only,
+    0x152A0005,  # 13 bne   t1, t2, 19         delete a leftover update file (no-op if absent).
+    0x00000000,  # 14 nop                      A flag set at boot (0x805a21d4) did not survive
+    0x00000000,  # 15 nop                      Wi-Fi start, so the tick count is used instead.
     0x3C04803B,  # 16 lui   a0, 0x803b
     0x0C03AB0E,  # 17 jal   FileSys_DeleteFile (0x800eac38)
     0x2484E314,  # 18 addiu a0, a0, -0x1cec    (delay slot) stock string A:\SJCAM001.bin
@@ -301,9 +301,9 @@ CAVE4_CODE = [
     0xAFBF001C,  # 1 sw    ra, 0x1c(sp)
     0x0C03AA1B,  # 2 jal   FileSys_CloseFile (0x800ea86c), a0 = handle
     0x00000000,  # 3 nop
-    0x3C08805A,  # 4 lui   t0, 0x805a
-    0x24090001,  # 5 addiu t1, zero, 1
-    0xAD0921D4,  # 6 sw    t1, 0x21d4(t0)     delete pending
+    0x00000000,  # 4 nop                      (the delete runs later from the --autorec
+    0x00000000,  # 5 nop                       code, see CAVE3_CODE 12..18)
+    0x00000000,  # 6 nop
     0x8FBF001C,  # 7 lw    ra, 0x1c(sp)
     0x03E00008,  # 8 jr    ra
     0x27BD0020,  # 9 addiu sp, sp, 0x20
@@ -412,7 +412,11 @@ def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mu
         for a, o, w, what in BINCLEAN_HOOK:
             n += _put(img, a, o, w, what)
     if autorec:
-        n += _put_code(img, CAVE3, CAVE3_CODE, "code cave 3")
+        code = list(CAVE3_CODE)
+        if not binclean:  # skip the delete block
+            k = len(REBOOT_PREFIX) + 12
+            code[k:k + 2] = [0x10000006, 0x00000000]  # b 19; nop
+        n += _put_code(img, CAVE3, code, "code cave 3")
         a, o, w = AUTOREC_HOOK
         n += _put(img, a, o, w, "link window timer hook")
     if apfile:
