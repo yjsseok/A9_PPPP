@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--autowifi]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -21,6 +21,16 @@
              that has one (2.5K .. 720p rows of the dual-stream table at
              0x8051ae44): 640x360 -> 1280x720, target 512000 B/s (~4 Mbps,
              the value the 2.5K row already uses).
+--autowifi   Wi-Fi starts by itself once per boot (requires the station
+             patch). The movie window's open handler already starts Wi-Fi
+             when the "Wi-Fi pending" word 0x805a0fa0 is set; its two calls
+             to 0x801b9318 right before that check now go through 8 new
+             instructions that set the word on the first call only, then
+             jump to 0x801b9318. The "done" marker is 0x805a21c8, the old
+             station SSID buffer that the station patch leaves unused (BSS,
+             zero at boot). The code lives in the UART "nand erase" handler
+             (0x80077148), whose console table slot (0x800017dc) is pointed
+             at the harmless "nand dump" handler instead.
 
 Every patched word is checked against the stock value first.
 """
@@ -41,6 +51,26 @@ STATUS_LEDS_OFF = [(a, JAL_GPIO_SET, JAL_GPIO_CLEAR) for a in (
     0x800C9164, 0x800C916C, 0x800C91D4, 0x800C91DC, 0x800C91E4, 0x800C9200, 0x800C9210, 0x800C923C)]
 JAL_GXSOUND_PLAY = 0x0C0A54BF  # jal 0x802952fc
 MUTE = [(0x8029569C, JAL_GXSOUND_PLAY, 0x00000000)]
+# --autowifi
+CAVE = 0x80077148
+CAVE_STOCK = [0x27BDFFE8, 0x24040001, 0xAFBE0010, 0x24050001,
+              0xAFBF0014, 0x0C01AF2C, 0x03A0F021, 0x03C0E821]
+CAVE_CODE = [
+    0x3C08805A,  # lui   t0, 0x805a
+    0x8D0921C8,  # lw    t1, 0x21c8(t0)    once-per-boot marker
+    0x15200003,  # bnez  t1, +3 (to j)
+    0x240A0001,  # addiu t2, zero, 1       (delay slot)
+    0xAD0A21C8,  # sw    t2, 0x21c8(t0)
+    0xAD0A0FA0,  # sw    t2, 0x0fa0(t0)    "Wi-Fi pending" -> movie open starts Wi-Fi
+    0x0806E4C6,  # j     0x801b9318
+    0x00000000,  # nop
+]
+JAL_HELPER = 0x0C06E4C6  # jal 0x801b9318
+JAL_CAVE = 0x0C01DC52    # jal 0x80077148
+AUTOWIFI_HOOKS = [(0x801B9980, JAL_HELPER, JAL_CAVE), (0x801B9A7C, JAL_HELPER, JAL_CAVE)]
+CONSOLE_ERASE_SLOT = (0x800017DC, CAVE, 0x800770F0)  # nand erase -> nand dump handler
+STATION_MARK = (0x801D8EB8, 0x92020E30)  # station patch: lbu v0, 0xe30(s0)
+
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
 # dual-stream table: row r main width at 0x8051ae44 + r*0x34,
@@ -65,8 +95,17 @@ def _put(img, addr, old, new, what):
     return 1
 
 
-def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False):
+def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
+          autowifi=False):
     n = 0
+    if autowifi:
+        addr, want = STATION_MARK
+        if _word(img, addr) != want:
+            raise ValueError("--autowifi needs the station patch (patch_station.py) applied first")
+        for k, (old, new) in enumerate(zip(CAVE_STOCK, CAVE_CODE)):
+            n += _put(img, CAVE + 4 * k, old, new, "code cave")
+        for a, o, w in AUTOWIFI_HOOKS + [CONSOLE_ERASE_SLOT]:
+            n += _put(img, a, o, w, "autowifi hook")
     if leds_off:
         for a, o, w in STATUS_LEDS_OFF:
             n += _put(img, a, o, w, "status LED on")
@@ -100,12 +139,13 @@ def main(argv=None):
     ap.add_argument("--live720", action="store_true")
     ap.add_argument("--leds-off", action="store_true")
     ap.add_argument("--mute", action="store_true")
+    ap.add_argument("--autowifi", action="store_true")
     a = ap.parse_args(argv)
-    if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute):
+    if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute or a.autowifi):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
-    n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute)
+    n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute, a.autowifi)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
