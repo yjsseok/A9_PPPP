@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec] [--binclean]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -70,6 +70,15 @@
              "dsysdma" console handler after the --apfile code (0x800cd1a4);
              its console slot is redirected as in --apfile. Recording does
              not start until the camera joins the network.
+--binclean   When A:\\SJCAM001.bin is on the card at boot, close and delete
+             it and boot normally. Stock firmware opens it (0x801c6724),
+             sets a hold flag (0x8055c33c) and leaves the screen off and
+             Wi-Fi down until the card is removed; the update itself was
+             already done by the loader before the main program started.
+             With this, a firmware can be put on the card over Wi-Fi (HTTP
+             multipart POST to /, the stock "Upload files" form) and one
+             power cycle installs it. Code: 9 instructions after the
+             --autorec code (0x800cd240).
 
 Every patched word is checked against the stock value first.
 """
@@ -208,6 +217,29 @@ JAL_CA4C8 = 0x0C032932  # jal 0x800ca4c8
 JAL_CAVE3 = 0x0C000000 | ((CAVE3 & 0x0FFFFFFF) >> 2)
 AUTOREC_HOOK = (0x801B08D0, JAL_CA4C8, JAL_CAVE3)
 
+# --binclean (code after the --autorec code)
+CAVE4 = CAVE3 + len(CAVE3_CODE) * 4  # 0x800cd240
+CAVE4_STOCK = [0xA7D6001C, 0xA3D5001E, 0xAFD40024, 0xA7D30028, 0xAFD20030, 0x8FFF0004, 0x2710D0A8,
+               0xAFDF0070, 0x8E100004]
+CAVE4_CODE = [
+    0x27BDFFE0,  # 0 addiu sp, sp, -0x20
+    0xAFBF001C,  # 1 sw    ra, 0x1c(sp)
+    0x0C03AA1B,  # 2 jal   FileSys_CloseFile (0x800ea86c), a0 = handle
+    0x00000000,  # 3 nop
+    0x0C03AB0E,  # 4 jal   FileSys_DeleteFile (0x800eac38)
+    0x27C40010,  # 5 addiu a0, fp, 0x10   (delay slot) caller's "A:\SJCAM001.bin" copy
+    0x8FBF001C,  # 6 lw    ra, 0x1c(sp)
+    0x03E00008,  # 7 jr    ra
+    0x27BD0020,  # 8 addiu sp, sp, 0x20
+]
+assert len(CAVE4_CODE) == len(CAVE4_STOCK)
+JAL_CAVE4 = 0x0C000000 | ((CAVE4 & 0x0FFFFFFF) >> 2)
+BINCLEAN_HOOK = [
+    (0x801C676C, 0x3C028056, 0x00000000, "lui v0, 0x8056 -> nop (beqz delay slot)"),
+    (0x801C6770, 0x24030001, JAL_CAVE4, "li v1, 1 -> jal close+delete"),
+    (0x801C6774, 0xA043C33C, 0x00402021, "sb v1, hold flag -> move a0, v0 (delay slot)"),
+]
+
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
 # dual-stream table: row r main width at 0x8051ae44 + r*0x34,
@@ -233,8 +265,15 @@ def _put(img, addr, old, new, what):
 
 
 def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
-          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False):
+          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False):
     n = 0
+    if binclean:
+        for k, (old, new) in enumerate(zip(CAVE4_STOCK, CAVE4_CODE)):
+            n += _put(img, CAVE4 + 4 * k, old, new, "code cave 4")
+        for a, o, w, what in BINCLEAN_HOOK:
+            n += _put(img, a, o, w, what)
+        a, o, w = CONSOLE_DSYSDMA_SLOT
+        n += _put(img, a, o, w, "console dsysdma slot")
     if autorec:
         for k, (old, new) in enumerate(zip(CAVE3_STOCK, CAVE3_CODE)):
             n += _put(img, CAVE3 + 4 * k, old, new, "code cave 3")
@@ -310,14 +349,15 @@ def main(argv=None):
     ap.add_argument("--defaults", action="store_true")
     ap.add_argument("--live15", action="store_true")
     ap.add_argument("--autorec", action="store_true")
+    ap.add_argument("--binclean", action="store_true")
     a = ap.parse_args(argv)
     if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute or a.autowifi or a.apfile
-            or a.defaults or a.live15 or a.autorec):
+            or a.defaults or a.live15 or a.autorec or a.binclean):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
     n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute, a.autowifi,
-              a.apfile, a.defaults, a.live15, a.autorec)
+              a.apfile, a.defaults, a.live15, a.autorec, a.binclean)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
