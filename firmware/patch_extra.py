@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec] [--binclean]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec] [--binclean] [--default-date YYYY-MM-DD]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -278,6 +278,30 @@ def _put_code(img, start, code, what):
     return sum(_put(img, start + 4 * k, DSYSDMA_STOCK[base + k], w, what) for k, w in enumerate(code))
 
 
+# --default-date (System_OnBoot): if the RTC date is before 2015-12-22 the
+# clock is set to 2016-01-01 00:00:01. The threshold (YYYYMMDD in a0 via
+# lui/ori) and the date (year in the delay slot of the bnez, month/day as
+# rtc_setDate arguments) become the given date.
+BOOT_DATE_THRESHOLD = (0x800CBAE8, 0x3C040133, 0x800CBAEC, 0x34847BB6)  # 20151222
+BOOT_DATE_SET = [(0x800CBB00, 0x240407E0, 0x24040000, "year"),   # addiu a0, zero, 2016 (0x800cb918 reloads a0)
+                 (0x800CBCA4, 0x24050001, 0x24050000, "month"),  # addiu a1, zero, 1
+                 (0x800CBCAC, 0x24060001, 0x24060000, "day")]    # addiu a2, zero, 1
+
+
+def _default_date(img, ymd):
+    y, m, d = ymd
+    if not (2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31):
+        raise ValueError("bad --default-date")
+    n = 0
+    v = y * 10000 + m * 100 + d
+    a1, o1, a2, o2 = BOOT_DATE_THRESHOLD
+    n += _put(img, a1, o1, 0x3C040000 | (v >> 16), "boot date threshold hi")
+    n += _put(img, a2, o2, 0x34840000 | (v & 0xFFFF), "boot date threshold lo")
+    for (a, o, base, what), val in zip(BOOT_DATE_SET, (y, m, d)):
+        n += _put(img, a, o, base | val, "boot date " + what)
+    return n
+
+
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
 # dual-stream table: row r main width at 0x8051ae44 + r*0x34,
@@ -303,7 +327,7 @@ def _put(img, addr, old, new, what):
 
 
 def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
-          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False):
+          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False, default_date=None):
     n = 0
     if binclean and not autorec:
         raise ValueError("--binclean needs --autorec (the delete runs in its timer code)")
@@ -325,6 +349,8 @@ def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mu
     if binclean or autorec or apfile:
         a, o, w = CONSOLE_DSYSDMA_SLOT
         n += _put(img, a, o, w, "console dsysdma slot")
+    if default_date:
+        n += _default_date(img, default_date)
     if defaults:
         for a, o, w, what in DEFAULTS:
             n += _put(img, a, o, w, what)
@@ -379,14 +405,17 @@ def main(argv=None):
     ap.add_argument("--live15", action="store_true")
     ap.add_argument("--autorec", action="store_true")
     ap.add_argument("--binclean", action="store_true")
+    ap.add_argument("--default-date", metavar="YYYY-MM-DD",
+                    help="clock after boot when the RTC date is older than this (stock 2016-01-01)")
     a = ap.parse_args(argv)
     if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute or a.autowifi or a.apfile
-            or a.defaults or a.live15 or a.autorec or a.binclean):
+            or a.defaults or a.live15 or a.autorec or a.binclean or a.default_date):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
     n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute, a.autowifi,
-              a.apfile, a.defaults, a.live15, a.autorec, a.binclean)
+              a.apfile, a.defaults, a.live15, a.autorec, a.binclean,
+              tuple(int(x) for x in a.default_date.split("-")) if a.default_date else None)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
