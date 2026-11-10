@@ -261,7 +261,7 @@ def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mu
         for r in LIVE_ROWS:
             a = TABLE2 + r * ROW
             sw, sh, sf, st = struct.unpack_from("<4I", img, a + 0x18 - BASE)
-            if (sw, sh) not in ((640, 360), (LIVE_W, LIVE_H)) or sf != 30 or st not in (204800, 512000):
+            if (sw, sh) not in ((640, 360), (LIVE_W, LIVE_H)) or sf not in (30, 15) or st not in (204800, 512000):
                 raise ValueError("table row %d at 0x%08x unexpected: %dx%d@%d %d" % (r, a, sw, sh, sf, st))
             n += _put(img, a + 0x18, sw, LIVE_W, "sub width")
             n += _put(img, a + 0x1C, sh, LIVE_H, "sub height")
