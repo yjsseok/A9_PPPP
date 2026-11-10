@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec] [--binclean] [--default-date YYYY-MM-DD]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec] [--binclean] [--default-date YYYY-MM-DD] [--reboot-cmd]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -137,7 +137,13 @@ DSYSDMA_STOCK = [
     0x3C0F800D, 0x25EED0B4, 0xAFD0007C, 0x91DF0006, 0x3C0D800D, 0x25ACD0C0, 0xA3DF008A, 0x919F0006,
     0x3C0B800D, 0x256AD0CC, 0xA3DF0096, 0x915F0006, 0x3C09800D, 0x2528D0D8, 0xA3DF00A2, 0x911F0006,
     0x3C07800D, 0xA3DF00AE, 0x3C06800D, 0x3C05800D, 0x3C04800D, 0x3C03800D, 0x3C02800D, 0x95CE0004,
-    0x958C0004, 0x954A0004, 0x95160004, 0x24B4D0FC,
+    0x958C0004, 0x954A0004, 0x95160004, 0x24B4D0FC, 0x2493D108, 0x2452D120, 0x24F0D0E4, 0x24DFD0F0,
+    0x2475D114, 0x8F39D09C, 0x8F18D0A8, 0x8DEFD0B4, 0x8DADD0C0, 0x8D6BD0CC, 0x8D29D0D8, 0x8CF7D0E4,
+    0x3C08800D, 0x3C07800D, 0xAFD9006C, 0xAFD80078, 0xAFCF0084, 0xA7CE0088, 0xAFCD0090, 0xA7CC0094,
+    0x250DD12C, 0xAFCB009C, 0xA7CA00A0, 0xAFC900A8, 0xA7D600AC, 0x24E9D138, 0xAFD700B4, 0x920F0006,
+    0x93EE0006, 0x96180004, 0x97FF0004, 0x928C000A, 0x926B000A, 0x8EAA0004, 0x8CD9D0F0, 0x8CB0D0FC,
+    0x8E860004, 0x8E650004, 0x96940008, 0x96730008, 0x8C95D108, 0x8C64D114, 0x8C43D120, 0x8E420004,
+    0xA7D800B8, 0xA3CF00BA, 0xAFD900C0, 0xA7DF00C4, 0xA3CE00C6, 0xAFD000CC,
 ]
 CONSOLE_DSYSDMA_SLOT = (0x80000B10, DSYSDMA, 0x800C901C)
 VERSION_660 = 0x803AFA88  # "660": first string of cmd 3012, only read by its handler; used as a status line
@@ -198,7 +204,45 @@ DEFAULTS = [
 # --autorec
 CAVE3 = CAVE2 + len(APFILE_CODE) * 4  # 0x800cd1c4
 AUTOREC_LIMIT = 240  # 500 ms ticks: try every 4 s for 2 minutes after the link window opens
-CAVE3_CODE = [
+REBOOT_PREFIX = [
+    # Reboot requested by HTTP cmd 9002 (--reboot-cmd)? 0x805a21d8 = 0 none, 1.. pending.
+    0x3C08805A,  # P0  lui   t0, 0x805a
+    0x8D0A21D8,  # P1  lw    t2, 0x21d8(t0)
+    0x11400020,  # P2  beqz  t2, P35 (autorec code)
+    0x00000000,  # P3  nop
+    0x27BDFFE0,  # P4  addiu sp, sp, -0x20
+    0xAFBF001C,  # P5  sw    ra, 0x1c(sp)
+    0x0C06FE8E,  # P6  jal   0x801bfa38         record state
+    0x00000000,  # P7  nop
+    0x240B0002,  # P8  addiu t3, zero, 2
+    0x144B0007,  # P9  bne   v0, t3, P17
+    0x240B0001,  # P10 addiu t3, zero, 1       (delay slot)
+    0x3C048000,  # P11 lui   a0, 0x8000         recording: stop it first
+    0x3484E003,  # P12 ori   a0, a0, 0xe003
+    0x24050001,  # P13 addiu a1, zero, 1
+    0x0C03A0B0,  # P14 jal   Ux_PostEvent
+    0x00003021,  # P15 move  a2, zero           (delay slot) par 0: stop
+    0x1000000D,  # P16 b     P30
+    0x104B0008,  # P17 beq   v0, t3, P26        ready (file closed): reboot now
+    0x3C08805A,  # P18 lui   t0, 0x805a         (delay slot)
+    0x8D0A21D8,  # P19 lw    t2, 0x21d8(t0)     other state: wait, at most 10 s
+    0x254A0001,  # P20 addiu t2, t2, 1
+    0xAD0A21D8,  # P21 sw    t2, 0x21d8(t0)
+    0x2D4A0015,  # P22 sltiu t2, t2, 21
+    0x15400006,  # P23 bnez  t2, P30
+    0x00000000,  # P24 nop
+    0x00000000,  # P25 nop
+    0x24040005,  # P26 addiu a0, zero, 5        same call as the end of a USB firmware update:
+    0x0C00525E,  # P27 jal   0x80014978         prints "(sw-reset)", waits 1 s, watchdog reset
+    0x240500FF,  # P28 addiu a1, zero, 0xff     (delay slot)
+    0x00000000,  # P29 nop
+    0x8FBF001C,  # P30 lw    ra, 0x1c(sp)
+    0x27BD0020,  # P31 addiu sp, sp, 0x20
+    0x24040002,  # P32 addiu a0, zero, 2
+    0x08032932,  # P33 j     0x800ca4c8
+    0x00000000,  # P34 nop
+]
+CAVE3_CODE = REBOOT_PREFIX + [
     0x3C08805A,  # 0  lui   t0, 0x805a
     0x8D0921D0,  # 1  lw    t1, 0x21d0(t0)     tick count (BSS, 0 at boot)
     0x2D2A0000 | AUTOREC_LIMIT,  # 2  sltiu t2, t1, LIMIT
@@ -264,7 +308,32 @@ CAVE4_CODE = [
     0x03E00008,  # 8 jr    ra
     0x27BD0020,  # 9 addiu sp, sp, 0x20
 ]
-assert (CAVE4 - DSYSDMA) // 4 + len(CAVE4_CODE) <= len(DSYSDMA_STOCK)
+
+# --reboot-cmd: HTTP cmd 9002 (stock: returns flag 0x0e, the same value cmd
+# 2022 reports) answers 0 and sets the reboot request that the --autorec
+# timer code carries out (stop recording, then reset).
+CAVE5 = CAVE4 + len(CAVE4_CODE) * 4
+CAVE5_CODE = [
+    0x27BDFFD0,  # 0  addiu sp, sp, -0x30
+    0xAFBF002C,  # 1  sw    ra, 0x2c(sp)
+    0x3C08805A,  # 2  lui   t0, 0x805a
+    0x24090001,  # 3  addiu t1, zero, 1
+    0xAD0921D8,  # 4  sw    t1, 0x21d8(t0)     reboot requested
+    0x8FA20040,  # 5  lw    v0, 0x40(sp)       5th argument
+    0xAFA60010,  # 6  sw    a2, 0x10(sp)       reply buffer
+    0xAFA70014,  # 7  sw    a3, 0x14(sp)       reply size
+    0xAFA20018,  # 8  sw    v0, 0x18(sp)
+    0x2404232A,  # 9  addiu a0, zero, 9002
+    0x00003021,  # 10 move  a2, zero           value 0
+    0x0C072E9F,  # 11 jal   0x801cba7c         XML reply, as the stock 9002 handler
+    0x00003821,  # 12 move  a3, zero           (delay slot)
+    0x8FBF002C,  # 13 lw    ra, 0x2c(sp)
+    0x27BD0030,  # 14 addiu sp, sp, 0x30
+    0x03E00008,  # 15 jr    ra
+    0x00001021,  # 16 move  v0, zero           (delay slot)
+]
+assert (CAVE5 - DSYSDMA) // 4 + len(CAVE5_CODE) <= len(DSYSDMA_STOCK)
+REBOOT_SLOT = (0x8051B680, 0x801CBB90, CAVE5)  # cmd table entry 9002, handler field
 JAL_CAVE4 = 0x0C000000 | ((CAVE4 & 0x0FFFFFFF) >> 2)
 BINCLEAN_HOOK = [
     (0x801C676C, 0x3C028056, 0x00000000, "lui v0, 0x8056 -> nop (beqz delay slot)"),
@@ -327,8 +396,15 @@ def _put(img, addr, old, new, what):
 
 
 def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
-          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False, default_date=None):
+          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False, default_date=None,
+          reboot_cmd=False):
     n = 0
+    if reboot_cmd and not autorec:
+        raise ValueError("--reboot-cmd needs --autorec (the reboot runs in its timer code)")
+    if reboot_cmd:
+        n += _put_code(img, CAVE5, CAVE5_CODE, "code cave 5")
+        a, o, w = REBOOT_SLOT
+        n += _put(img, a, o, w, "cmd 9002 handler")
     if binclean and not autorec:
         raise ValueError("--binclean needs --autorec (the delete runs in its timer code)")
     if binclean:
@@ -346,7 +422,7 @@ def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mu
         n += _put_code(img, CAVE2, APFILE_CODE, "code cave 2")
         for a in MODE_SITES:
             n += _put(img, a, LI_V0_1, JAL_GET_MODE, "station mode constant")
-    if binclean or autorec or apfile:
+    if binclean or autorec or apfile or reboot_cmd:
         a, o, w = CONSOLE_DSYSDMA_SLOT
         n += _put(img, a, o, w, "console dsysdma slot")
     if default_date:
@@ -405,17 +481,19 @@ def main(argv=None):
     ap.add_argument("--live15", action="store_true")
     ap.add_argument("--autorec", action="store_true")
     ap.add_argument("--binclean", action="store_true")
+    ap.add_argument("--reboot-cmd", action="store_true")
     ap.add_argument("--default-date", metavar="YYYY-MM-DD",
                     help="clock after boot when the RTC date is older than this (stock 2016-01-01)")
     a = ap.parse_args(argv)
     if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute or a.autowifi or a.apfile
-            or a.defaults or a.live15 or a.autorec or a.binclean or a.default_date):
+            or a.defaults or a.live15 or a.autorec or a.binclean or a.default_date or a.reboot_cmd):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
     n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute, a.autowifi,
               a.apfile, a.defaults, a.live15, a.autorec, a.binclean,
-              tuple(int(x) for x in a.default_date.split("-")) if a.default_date else None)
+              tuple(int(x) for x in a.default_date.split("-")) if a.default_date else None,
+              a.reboot_cmd)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
