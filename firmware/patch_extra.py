@@ -54,17 +54,22 @@
              the first version of this patch (0x1a = 0) ran into.
              Car mode (flag 0xa1) stays off: its record key is posted
              before the Wi-Fi wait window opens and is lost there.
---autorec    Start recording once per boot, 3 s after the Wi-Fi link
-             window (UIMenuWndWiFiMobileLinkOK) opens, i.e. after the
-             station gets an IP. That window's 500 ms timer event
-             (0x80001000/0x80001005, handler 0x801b084c) calls
-             0x800ca4c8 at 0x801b08d0; the call goes through 21 new
-             instructions that count ticks in 0x805a21d0 (spare station
-             buffer) and on the 6th tick post UI event 0x8000e003 with
-             par 1 - the same event HTTP cmd=2001&par=1 sends. Code sits in
-             the "dsysdma" console handler after the --apfile code
-             (0x800cd1a4); its console slot is redirected as in --apfile.
-             Recording does not start until the camera joins the network.
+--autorec    Start recording after boot without a button. While the
+             Wi-Fi link window (UIMenuWndWiFiMobileLinkOK) is open, its
+             500 ms timer event (0x80001000/0x80001005, handler 0x801b084c)
+             calls 0x800ca4c8 at 0x801b08d0; that call goes through 39 new
+             instructions. Every 8th tick (4 s), for up to 240 ticks after
+             the window first opens, they read the movie record state
+             (0x801bfa38: 1 ready, 2 recording); if ready they post UI event
+             0x8000e003 with par 1 (what HTTP cmd=2001&par=1 sends), and once
+             recording is seen they stop for this boot, so a later manual
+             stop is not undone. Tick count: 0x805a21d0 (spare station
+             buffer). For checking from outside, the first string of cmd
+             3012 ("660", 0x803afa88) becomes <attempt letter a..><state>0,
+             e.g. "b20" = recording seen on the 2nd try. Code sits in the
+             "dsysdma" console handler after the --apfile code (0x800cd1a4);
+             its console slot is redirected as in --apfile. Recording does
+             not start until the camera joins the network.
 
 Every patched word is checked against the stock value first.
 """
@@ -151,32 +156,54 @@ DEFAULTS = [
 CAVE3 = CAVE2 + 24 * 4  # 0x800cd1a4
 CAVE3_STOCK = [0x94EC0008, 0x3C06800D, 0x24CAD06C, 0x92D50006, 0xA7CC0038, 0x954A0004, 0x3C05800D,
                0x24A8D078, 0xA7CA0040, 0x95080004, 0x3C04800D, 0x2483D084, 0xA7C8004C, 0x946E0008,
-               0x3C02800D, 0x245FD090, 0xA7CE005C, 0x8FFF0004, 0x8CC6D06C, 0xAFDF0064, 0x8CE70004]
-AUTOREC_TICKS = 6  # 500 ms each
+               0x3C02800D, 0x245FD090, 0xA7CE005C, 0x8FFF0004, 0x8CC6D06C, 0xAFDF0064, 0x8CE70004,
+               0x8CA5D078, 0x8C84D084, 0x96D60004, 0x3C19800D, 0xAFC70034, 0xAFC6003C, 0xAFC50048,
+               0xAFC40054, 0x8C630004, 0x8EF7D060, 0x8E94D048, 0x8C42D090, 0x273FD09C, 0x8E52D054,
+               0x3C18800D, 0xAFC30058, 0xAFC20060, 0xAFD70018]
+AUTOREC_LIMIT = 240  # 500 ms ticks: try every 4 s for 2 minutes after the link window opens
 CAVE3_CODE = [
     0x3C08805A,  # 0  lui   t0, 0x805a
     0x8D0921D0,  # 1  lw    t1, 0x21d0(t0)     tick count (BSS, 0 at boot)
-    0x2D2A0000 | AUTOREC_TICKS,  # 2  sltiu t2, t1, N
-    0x1140000F,  # 3  beqz  t2, 19 (done)
+    0x2D2A0000 | AUTOREC_LIMIT,  # 2  sltiu t2, t1, LIMIT
+    0x11400021,  # 3  beqz  t2, 37 (tail)       done or gave up
     0x25290001,  # 4  addiu t1, t1, 1          (delay slot)
     0xAD0921D0,  # 5  sw    t1, 0x21d0(t0)
-    0x240A0000 | AUTOREC_TICKS,  # 6  addiu t2, zero, N
-    0x152A000B,  # 7  bne   t1, t2, 19
+    0x312A0007,  # 6  andi  t2, t1, 7
+    0x1540001D,  # 7  bnez  t2, 37 (tail)       act on every 8th tick
     0x00000000,  # 8  nop
     0x27BDFFE0,  # 9  addiu sp, sp, -0x20
     0xAFBF001C,  # 10 sw    ra, 0x1c(sp)
-    0x3C048000,  # 11 lui   a0, 0x8000
-    0x3484E003,  # 12 ori   a0, a0, 0xe003     same UI event as HTTP cmd 2001
-    0x24050001,  # 13 addiu a1, zero, 1        one parameter
-    0x0C03A0B0,  # 14 jal   Ux_PostEvent (0x800e82c0)
-    0x24060001,  # 15 addiu a2, zero, 1        (delay slot) par = 1: start
-    0x8FBF001C,  # 16 lw    ra, 0x1c(sp)
-    0x27BD0020,  # 17 addiu sp, sp, 0x20
-    0x24040002,  # 18 addiu a0, zero, 2        argument of the original call
-    0x08032932,  # 19 j     0x800ca4c8         original callee, returns to the timer handler
-    0x00000000,  # 20 nop
+    0xAFA90018,  # 11 sw    t1, 0x18(sp)
+    0x0C06FE8E,  # 12 jal   0x801bfa38         movie record state: 1 ready, 2 recording
+    0x00000000,  # 13 nop
+    0x8FA90018,  # 14 lw    t1, 0x18(sp)
+    0x3C08803B,  # 15 lui   t0, 0x803b
+    0x000950C2,  # 16 srl   t2, t1, 3          attempt number 1, 2, ..
+    0x254A0060,  # 17 addiu t2, t2, 0x60       'a', 'b', ..
+    0xA10AFA88,  # 18 sb    t2, -0x578(t0)     cmd 3012 first string ("660") becomes
+    0x244B0030,  # 19 addiu t3, v0, 0x30       <attempt letter><state digit>0
+    0xA10BFA89,  # 20 sb    t3, -0x577(t0)
+    0x240B0002,  # 21 addiu t3, zero, 2
+    0x144B0005,  # 22 bne   v0, t3, 28
+    0x240B0001,  # 23 addiu t3, zero, 1        (delay slot)
+    0x3C08805A,  # 24 lui   t0, 0x805a         recording: stop trying
+    0x24090000 | AUTOREC_LIMIT,  # 25 addiu t1, zero, LIMIT
+    0x10000007,  # 26 b     34
+    0xAD0921D0,  # 27 sw    t1, 0x21d0(t0)     (delay slot)
+    0x144B0005,  # 28 bne   v0, t3, 34          post only when ready to record
+    0x3C048000,  # 29 lui   a0, 0x8000         (delay slot)
+    0x3484E003,  # 30 ori   a0, a0, 0xe003     same UI event as HTTP cmd 2001
+    0x24050001,  # 31 addiu a1, zero, 1        one parameter
+    0x0C03A0B0,  # 32 jal   Ux_PostEvent (0x800e82c0)
+    0x24060001,  # 33 addiu a2, zero, 1        (delay slot) par = 1: start
+    0x8FBF001C,  # 34 lw    ra, 0x1c(sp)
+    0x27BD0020,  # 35 addiu sp, sp, 0x20
+    0x24040002,  # 36 addiu a0, zero, 2        argument of the original call
+    0x08032932,  # 37 j     0x800ca4c8         original callee, returns to the timer handler
+    0x00000000,  # 38 nop
 ]
 assert len(CAVE3_CODE) == len(CAVE3_STOCK)
+VERSION_660 = 0x803AFA88  # "660", only read by the cmd 3012 handler
 JAL_CA4C8 = 0x0C032932  # jal 0x800ca4c8
 JAL_CAVE3 = 0x0C000000 | ((CAVE3 & 0x0FFFFFFF) >> 2)
 AUTOREC_HOOK = (0x801B08D0, JAL_CA4C8, JAL_CAVE3)
