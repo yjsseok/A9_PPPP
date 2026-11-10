@@ -24,6 +24,7 @@ Patch:
 """
 
 import argparse
+import os
 import struct
 import sys
 
@@ -88,9 +89,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("part0", help="decompressed stock part0.bin")
     ap.add_argument("out", help="patched part0 output")
-    ap.add_argument("--ssid", required=True)
-    ap.add_argument("--passphrase", required=True)
+    ap.add_argument("--ssid", default=os.environ.get("M20_WIFI_SSID"),
+                    help="default: environment variable M20_WIFI_SSID")
+    ap.add_argument("--passphrase", default=os.environ.get("M20_WIFI_PASS"),
+                    help="default: environment variable M20_WIFI_PASS (keeps it out of shell history)")
     args = ap.parse_args(argv)
+    if not args.ssid or not args.passphrase:
+        ap.error("give --ssid/--passphrase or set M20_WIFI_SSID/M20_WIFI_PASS")
 
     ssid = args.ssid.encode("utf-8")
     pw = args.passphrase.encode("utf-8")

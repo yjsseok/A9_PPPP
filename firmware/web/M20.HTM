@@ -38,7 +38,7 @@ a{color:var(--accent)}
     <dt>카메라</dt><dd id="s-ver">-</dd>
     <dt>배터리</dt><dd id="s-batt">-</dd>
     <dt>SD 남은 용량</dt><dd id="s-free">-</dd>
-    <dt>녹화 시간</dt><dd id="s-rec">-</dd>
+    <dt>녹화</dt><dd id="s-rec">-</dd>
   </dl>
   <p class="note"><button id="b-refresh" style="width:auto">새로고침</button></p>
 </section>
@@ -162,8 +162,8 @@ a{color:var(--accent)}
     });
     cmd(2016).then(function (r) {
       if (r.error) return;
-      var s = parseInt(r.value[0] || r.status[0], 10);
-      $("s-rec").textContent = isNaN(s) ? "-" : Math.floor(s / 60) + "분 " + (s % 60) + "초";
+      var s = parseInt(r.value[0], 10);  // 1 = 녹화 중, 0 = 정지 (경과 시간이 아님)
+      $("s-rec").textContent = isNaN(s) ? "-" : (s ? "녹화 중" : "정지");
     });
     cmd(3014).then(function (r) {
       if (r.error) return;
@@ -177,8 +177,8 @@ a{color:var(--accent)}
   function pad(n) { return (n < 10 ? "0" : "") + n; }
 
   $("b-refresh").onclick = refresh;
-  $("b-rec-on").onclick = function () { cmd(2001, "&par=1").then(function (r) { report("녹화 시작", r); }); };
-  $("b-rec-off").onclick = function () { cmd(2001, "&par=0").then(function (r) { report("녹화 정지", r); }); };
+  $("b-rec-on").onclick = function () { cmd(2001, "&par=1").then(function (r) { report("녹화 시작", r); refresh(); }); };
+  $("b-rec-off").onclick = function () { cmd(2001, "&par=0").then(function (r) { report("녹화 정지", r); refresh(); }); };
   $("b-movie").onclick = function () { cmd(3001, "&par=1").then(function (r) { report("동영상 모드", r); }); };
   $("b-photo").onclick = function () { cmd(3001, "&par=0").then(function (r) { report("사진 모드", r); }); };
   $("b-shot").onclick = function () { cmd(1001).then(function (r) { report("사진 찍기", r); }); };

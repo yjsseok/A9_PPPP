@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional patches for SJCAM M20 V1.3.1 part0 (stock or station-patched).
 
-    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults]
+    python3 patch_extra.py IN_part0.bin OUT_part0.bin [--led-off] [--reconnect] [--leds-off] [--mute] [--live720] [--live15] [--autowifi] [--apfile] [--defaults] [--autorec]
 
 --led-off    Wi-Fi (blue) LED never lights. The only routine that turns
              GPIO 0x5b on (0x800c9094, used for both "on" and blinking) is
@@ -45,10 +45,26 @@
              230 instructions, referenced only by console slot
              0x80000b10, which is pointed at the empty function 0x800c901c).
 --defaults   Factory defaults used after a firmware update or reset
-             (SysResetFlag 0x801c5188): movie size flag 0x1a = 0 (2.5K),
-             auto power off flag 0x3a = 0 (off), car mode flag 0xa1 = 1
-             (start recording when the movie screen first opens and when
-             external power is connected).
+             (SysResetFlag 0x801c5188): movie size flag 0x1a = 1
+             (2560x1440@30, HTTP 2002 par 0) and auto power off flag
+             0x3a = 0 (off). Flag 0x1a counts rows of the movie size table
+             (0 = 2880x2160@24); HTTP 2002 maps flag 1/2/4/8/9.. to par
+             0/1/2/3/4.. (cmd 3014 handler 0x801cad44), and the Wi-Fi window
+             (0x801b1f14) turns 0 or 0xb into 2 (1080p60), which is what
+             the first version of this patch (0x1a = 0) ran into.
+             Car mode (flag 0xa1) stays off: its record key is posted
+             before the Wi-Fi wait window opens and is lost there.
+--autorec    Start recording once per boot, 3 s after the Wi-Fi link
+             window (UIMenuWndWiFiMobileLinkOK) opens, i.e. after the
+             station gets an IP. That window's 500 ms timer event
+             (0x80001000/0x80001005, handler 0x801b084c) calls
+             0x800ca4c8 at 0x801b08d0; the call goes through 21 new
+             instructions that count ticks in 0x805a21d0 (spare station
+             buffer) and on the 6th tick post UI event 0x8000e003 with
+             par 1 - the same event HTTP cmd=2001&par=1 sends. Code sits in
+             the "dsysdma" console handler after the --apfile code
+             (0x800cd1a4); its console slot is redirected as in --apfile.
+             Recording does not start until the camera joins the network.
 
 Every patched word is checked against the stock value first.
 """
@@ -127,10 +143,43 @@ CONSOLE_DSYSDMA_SLOT = (0x80000B10, CAVE2, 0x800C901C)
 
 # --defaults (SysResetFlag 0x801c5188; v1 = 1 throughout)
 DEFAULTS = [
-    (0x801C51A8, 0xAC44010C, 0xAC40010C, "flag 0x1a movie size 2 -> 0 (2.5K)"),
+    (0x801C51A8, 0xAC44010C, 0xAC43010C, "flag 0x1a movie size 2 -> 1 (2560x1440@30)"),
     (0x801C5264, 0xAC43018C, 0xAC40018C, "flag 0x3a auto power off 1 -> 0"),
-    (0x801C52C8, 0xAC400328, 0xAC430328, "flag 0xa1 car mode 0 -> 1"),
 ]
+
+# --autorec (code after GET_MODE + path in cave 2)
+CAVE3 = CAVE2 + 24 * 4  # 0x800cd1a4
+CAVE3_STOCK = [0x94EC0008, 0x3C06800D, 0x24CAD06C, 0x92D50006, 0xA7CC0038, 0x954A0004, 0x3C05800D,
+               0x24A8D078, 0xA7CA0040, 0x95080004, 0x3C04800D, 0x2483D084, 0xA7C8004C, 0x946E0008,
+               0x3C02800D, 0x245FD090, 0xA7CE005C, 0x8FFF0004, 0x8CC6D06C, 0xAFDF0064, 0x8CE70004]
+AUTOREC_TICKS = 6  # 500 ms each
+CAVE3_CODE = [
+    0x3C08805A,  # 0  lui   t0, 0x805a
+    0x8D0921D0,  # 1  lw    t1, 0x21d0(t0)     tick count (BSS, 0 at boot)
+    0x2D2A0000 | AUTOREC_TICKS,  # 2  sltiu t2, t1, N
+    0x1140000F,  # 3  beqz  t2, 19 (done)
+    0x25290001,  # 4  addiu t1, t1, 1          (delay slot)
+    0xAD0921D0,  # 5  sw    t1, 0x21d0(t0)
+    0x240A0000 | AUTOREC_TICKS,  # 6  addiu t2, zero, N
+    0x152A000B,  # 7  bne   t1, t2, 19
+    0x00000000,  # 8  nop
+    0x27BDFFE0,  # 9  addiu sp, sp, -0x20
+    0xAFBF001C,  # 10 sw    ra, 0x1c(sp)
+    0x3C048000,  # 11 lui   a0, 0x8000
+    0x3484E003,  # 12 ori   a0, a0, 0xe003     same UI event as HTTP cmd 2001
+    0x24050001,  # 13 addiu a1, zero, 1        one parameter
+    0x0C03A0B0,  # 14 jal   Ux_PostEvent (0x800e82c0)
+    0x24060001,  # 15 addiu a2, zero, 1        (delay slot) par = 1: start
+    0x8FBF001C,  # 16 lw    ra, 0x1c(sp)
+    0x27BD0020,  # 17 addiu sp, sp, 0x20
+    0x24040002,  # 18 addiu a0, zero, 2        argument of the original call
+    0x08032932,  # 19 j     0x800ca4c8         original callee, returns to the timer handler
+    0x00000000,  # 20 nop
+]
+assert len(CAVE3_CODE) == len(CAVE3_STOCK)
+JAL_CA4C8 = 0x0C032932  # jal 0x800ca4c8
+JAL_CAVE3 = 0x0C000000 | ((CAVE3 & 0x0FFFFFFF) >> 2)
+AUTOREC_HOOK = (0x801B08D0, JAL_CA4C8, JAL_CAVE3)
 
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
@@ -157,8 +206,15 @@ def _put(img, addr, old, new, what):
 
 
 def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
-          autowifi=False, apfile=False, defaults=False, live15=False):
+          autowifi=False, apfile=False, defaults=False, live15=False, autorec=False):
     n = 0
+    if autorec:
+        for k, (old, new) in enumerate(zip(CAVE3_STOCK, CAVE3_CODE)):
+            n += _put(img, CAVE3 + 4 * k, old, new, "code cave 3")
+        a, o, w = AUTOREC_HOOK
+        n += _put(img, a, o, w, "link window timer hook")
+        a, o, w = CONSOLE_DSYSDMA_SLOT
+        n += _put(img, a, o, w, "console dsysdma slot")
     if apfile:
         addr, want = STATION_MARK
         if _word(img, addr) != want:
@@ -226,14 +282,15 @@ def main(argv=None):
     ap.add_argument("--apfile", action="store_true")
     ap.add_argument("--defaults", action="store_true")
     ap.add_argument("--live15", action="store_true")
+    ap.add_argument("--autorec", action="store_true")
     a = ap.parse_args(argv)
     if not (a.led_off or a.reconnect or a.live720 or a.leds_off or a.mute or a.autowifi or a.apfile
-            or a.defaults or a.live15):
+            or a.defaults or a.live15 or a.autorec):
         ap.error("choose at least one patch")
     with open(a.part0, "rb") as f:
         img = bytearray(f.read())
     n = apply(img, a.led_off, a.reconnect, a.live720, a.leds_off, a.mute, a.autowifi,
-              a.apfile, a.defaults, a.live15)
+              a.apfile, a.defaults, a.live15, a.autorec)
     with open(a.out, "wb") as f:
         f.write(img)
     print("patched %d words -> %s" % (n, a.out))
