@@ -119,41 +119,75 @@ AUTOWIFI_HOOKS = [(0x801B9980, JAL_HELPER, JAL_CAVE), (0x801B9A7C, JAL_HELPER, J
 CONSOLE_ERASE_SLOT = (0x800017DC, CAVE, 0x800770F0)  # nand erase -> nand dump handler
 STATION_MARK = (0x801D8EB8, 0x92020E30)  # station patch: lbu v0, 0xe30(s0)
 
+# All new code below lives in the UART "dsysdma" handler (0x800cd144, 230
+# instructions, referenced only by console slot 0x80000b10, which is pointed
+# at the empty function 0x800c901c): get_mode + path, then --autorec, then
+# --binclean.
+DSYSDMA = 0x800CD144
+DSYSDMA_STOCK = [
+    0x27BDFD70, 0x240600FC, 0xAFBE0288, 0x03A0F021, 0xAFB1026C, 0x27D10018, 0x02202021, 0xAFB40278,
+    0xAFB20270, 0x00002821, 0x3C14800D, 0x3C12800D, 0xAFBF028C, 0xAFB70284, 0xAFB60280, 0xAFB5027C,
+    0xAFB30274, 0x0C007DA8, 0xAFB00268, 0x2647D054, 0x268CD048, 0x3C17800D, 0x95930004, 0x26F6D060,
+    0x94EC0008, 0x3C06800D, 0x24CAD06C, 0x92D50006, 0xA7CC0038, 0x954A0004, 0x3C05800D, 0x24A8D078,
+    0xA7CA0040, 0x95080004, 0x3C04800D, 0x2483D084, 0xA7C8004C, 0x946E0008, 0x3C02800D, 0x245FD090,
+    0xA7CE005C, 0x8FFF0004, 0x8CC6D06C, 0xAFDF0064, 0x8CE70004, 0x8CA5D078, 0x8C84D084, 0x96D60004,
+    0x3C19800D, 0xAFC70034, 0xAFC6003C, 0xAFC50048, 0xAFC40054, 0x8C630004, 0x8EF7D060, 0x8E94D048,
+    0x8C42D090, 0x273FD09C, 0x8E52D054, 0x3C18800D, 0xAFC30058, 0xAFC20060, 0xAFD70018, 0xA7D6001C,
+    0xA3D5001E, 0xAFD40024, 0xA7D30028, 0xAFD20030, 0x8FFF0004, 0x2710D0A8, 0xAFDF0070, 0x8E100004,
+    0x3C0F800D, 0x25EED0B4, 0xAFD0007C, 0x91DF0006, 0x3C0D800D, 0x25ACD0C0, 0xA3DF008A, 0x919F0006,
+    0x3C0B800D, 0x256AD0CC, 0xA3DF0096, 0x915F0006, 0x3C09800D, 0x2528D0D8, 0xA3DF00A2, 0x911F0006,
+    0x3C07800D, 0xA3DF00AE, 0x3C06800D, 0x3C05800D, 0x3C04800D, 0x3C03800D, 0x3C02800D, 0x95CE0004,
+    0x958C0004, 0x954A0004, 0x95160004, 0x24B4D0FC,
+]
+CONSOLE_DSYSDMA_SLOT = (0x80000B10, DSYSDMA, 0x800C901C)
+VERSION_660 = 0x803AFA88  # "660": first string of cmd 3012, only read by its handler; used as a status line
+
 # --apfile
-CAVE2 = 0x800CD144
-CAVE2_STOCK = [0x27BDFD70, 0x240600FC, 0xAFBE0288, 0x03A0F021, 0xAFB1026C, 0x27D10018,
-               0x02202021, 0xAFB40278, 0xAFB20270, 0x00002821, 0x3C14800D, 0x3C12800D,
-               0xAFBF028C, 0xAFB70284, 0xAFB60280, 0xAFB5027C, 0xAFB30274, 0x0C007DA8,
-               0xAFB00268, 0x2647D054, 0x268CD048, 0x3C17800D, 0x95930004, 0x26F6D060]
-AP_PATH_ADDR = CAVE2 + 20 * 4
+# get_mode(): 1 station, 0 AP. Checks for the switch file once per boot with
+# FileSys_OpenFile/CloseFile (FileSys_GetAttrib said "missing" for an existing
+# file on the camera, 2026-11-10) and caches 2 = AP, 1 = station in 0x805a21cc
+# (spare station buffer). Writes 'S' (no file) or 'T' (file found) to the
+# third character of the status line.
+CAVE2 = DSYSDMA
 GET_MODE = [
     0x3C08805A,  # 0  lui   t0, 0x805a
     0x8D0221CC,  # 1  lw    v0, 0x21cc(t0)     cached: 1 station, 2 AP, 0 unknown
-    0x1440000E,  # 2  bnez  v0, 17
+    0x14400016,  # 2  bnez  v0, 25
     0x00000000,  # 3  nop
     0x27BDFFE0,  # 4  addiu sp, sp, -0x20
     0xAFBF001C,  # 5  sw    ra, 0x1c(sp)
-    0x3C040000 | (((AP_PATH_ADDR + 0x8000) >> 16) & 0xFFFF),  # 6  lui a0, %hi(path) (addiu sign-extends)
-    0x24840000 | (AP_PATH_ADDR & 0xFFFF),         # 7  addiu a0, a0, lo(path)
-    0x0C03AAE2,  # 8  jal   FileSys_GetAttrib (0x800eab88)
-    0x27A50010,  # 9  addiu a1, sp, 0x10       (delay slot) attribute byte
-    0x8FBF001C,  # 10 lw    ra, 0x1c(sp)
-    0x27BD0020,  # 11 addiu sp, sp, 0x20
-    0x2C420001,  # 12 sltiu v0, v0, 1          1 if the file exists
-    0x24420001,  # 13 addiu v0, v0, 1          2 = AP, 1 = station
-    0x3C08805A,  # 14 lui   t0, 0x805a
-    0xAD0221CC,  # 15 sw    v0, 0x21cc(t0)
-    0x00000000,  # 16 nop
-    0x24090002,  # 17 addiu t1, zero, 2
-    0x03E00008,  # 18 jr    ra
-    0x01221023,  # 19 subu  v0, t1, v0         (delay slot) station 1, AP 0
+    None,        # 6  lui   a0, %hi(path)
+    None,        # 7  addiu a0, a0, %lo(path)
+    0x0C03AA31,  # 8  jal   FileSys_OpenFile (0x800ea8c4)
+    0x24050001,  # 9  addiu a1, zero, 1        (delay slot) read
+    0xAFA20018,  # 10 sw    v0, 0x18(sp)       handle, 0 if missing
+    0x10400003,  # 11 beqz  v0, 15
+    0x00402021,  # 12 move  a0, v0             (delay slot)
+    0x0C03AA1B,  # 13 jal   FileSys_CloseFile (0x800ea86c)
+    0x00000000,  # 14 nop
+    0x8FA20018,  # 15 lw    v0, 0x18(sp)
+    0x8FBF001C,  # 16 lw    ra, 0x1c(sp)
+    0x27BD0020,  # 17 addiu sp, sp, 0x20
+    0x0002102B,  # 18 sltu  v0, zero, v0       1 if the file exists
+    0x3C09803B,  # 19 lui   t1, 0x803b
+    0x244A0053,  # 20 addiu t2, v0, 0x53       'S' station / 'T' file found
+    0xA12AFA8A,  # 21 sb    t2, -0x576(t1)     status line, 3rd character
+    0x24420001,  # 22 addiu v0, v0, 1          2 = AP, 1 = station
+    0x3C08805A,  # 23 lui   t0, 0x805a
+    0xAD0221CC,  # 24 sw    v0, 0x21cc(t0)
+    0x24090002,  # 25 addiu t1, zero, 2
+    0x03E00008,  # 26 jr    ra
+    0x01221023,  # 27 subu  v0, t1, v0         (delay slot) station 1, AP 0
 ]
+AP_PATH_ADDR = CAVE2 + len(GET_MODE) * 4
+GET_MODE[6] = 0x3C040000 | (((AP_PATH_ADDR + 0x8000) >> 16) & 0xFFFF)  # addiu sign-extends
+GET_MODE[7] = 0x24840000 | (AP_PATH_ADDR & 0xFFFF)
 AP_PATH = b"A:\\M20AP.TXT\0\0\0\0"  # 12 chars + NULs = 16 bytes
 assert len(AP_PATH) == 16
+APFILE_CODE = GET_MODE + list(struct.unpack("<4I", AP_PATH))
 JAL_GET_MODE = 0x0C000000 | ((CAVE2 & 0x0FFFFFFF) >> 2)
 LI_V0_1 = 0x24020001
 MODE_SITES = [0x801D8D10, 0x801D8D9C, 0x801D8DB4, 0x801D8DD4, 0x801D8E24, 0x801D8E38, 0x801D8E88]
-CONSOLE_DSYSDMA_SLOT = (0x80000B10, CAVE2, 0x800C901C)
 
 # --defaults (SysResetFlag 0x801c5188; v1 = 1 throughout)
 DEFAULTS = [
@@ -161,84 +195,88 @@ DEFAULTS = [
     (0x801C5264, 0xAC43018C, 0xAC40018C, "flag 0x3a auto power off 1 -> 0"),
 ]
 
-# --autorec (code after GET_MODE + path in cave 2)
-CAVE3 = CAVE2 + 24 * 4  # 0x800cd1a4
-CAVE3_STOCK = [0x94EC0008, 0x3C06800D, 0x24CAD06C, 0x92D50006, 0xA7CC0038, 0x954A0004, 0x3C05800D,
-               0x24A8D078, 0xA7CA0040, 0x95080004, 0x3C04800D, 0x2483D084, 0xA7C8004C, 0x946E0008,
-               0x3C02800D, 0x245FD090, 0xA7CE005C, 0x8FFF0004, 0x8CC6D06C, 0xAFDF0064, 0x8CE70004,
-               0x8CA5D078, 0x8C84D084, 0x96D60004, 0x3C19800D, 0xAFC70034, 0xAFC6003C, 0xAFC50048,
-               0xAFC40054, 0x8C630004, 0x8EF7D060, 0x8E94D048, 0x8C42D090, 0x273FD09C, 0x8E52D054,
-               0x3C18800D, 0xAFC30058, 0xAFC20060, 0xAFD70018]
+# --autorec
+CAVE3 = CAVE2 + len(APFILE_CODE) * 4  # 0x800cd1c4
 AUTOREC_LIMIT = 240  # 500 ms ticks: try every 4 s for 2 minutes after the link window opens
 CAVE3_CODE = [
     0x3C08805A,  # 0  lui   t0, 0x805a
     0x8D0921D0,  # 1  lw    t1, 0x21d0(t0)     tick count (BSS, 0 at boot)
     0x2D2A0000 | AUTOREC_LIMIT,  # 2  sltiu t2, t1, LIMIT
-    0x11400021,  # 3  beqz  t2, 37 (tail)       done or gave up
+    0x11400028,  # 3  beqz  t2, 44 (tail)       done or gave up
     0x25290001,  # 4  addiu t1, t1, 1          (delay slot)
     0xAD0921D0,  # 5  sw    t1, 0x21d0(t0)
     0x312A0007,  # 6  andi  t2, t1, 7
-    0x1540001D,  # 7  bnez  t2, 37 (tail)       act on every 8th tick
+    0x15400024,  # 7  bnez  t2, 44 (tail)       act on every 8th tick
     0x00000000,  # 8  nop
     0x27BDFFE0,  # 9  addiu sp, sp, -0x20
     0xAFBF001C,  # 10 sw    ra, 0x1c(sp)
     0xAFA90018,  # 11 sw    t1, 0x18(sp)
-    0x0C06FE8E,  # 12 jal   0x801bfa38         movie record state: 1 ready, 2 recording
-    0x00000000,  # 13 nop
-    0x8FA90018,  # 14 lw    t1, 0x18(sp)
-    0x3C08803B,  # 15 lui   t0, 0x803b
-    0x000950C2,  # 16 srl   t2, t1, 3          attempt number 1, 2, ..
-    0x254A0060,  # 17 addiu t2, t2, 0x60       'a', 'b', ..
-    0xA10AFA88,  # 18 sb    t2, -0x578(t0)     cmd 3012 first string ("660") becomes
-    0x244B0030,  # 19 addiu t3, v0, 0x30       <attempt letter><state digit>0
-    0xA10BFA89,  # 20 sb    t3, -0x577(t0)
-    0x240B0002,  # 21 addiu t3, zero, 2
-    0x144B0005,  # 22 bne   v0, t3, 28
-    0x240B0001,  # 23 addiu t3, zero, 1        (delay slot)
-    0x3C08805A,  # 24 lui   t0, 0x805a         recording: stop trying
-    0x24090000 | AUTOREC_LIMIT,  # 25 addiu t1, zero, LIMIT
-    0x10000007,  # 26 b     34
-    0xAD0921D0,  # 27 sw    t1, 0x21d0(t0)     (delay slot)
-    0x144B0005,  # 28 bne   v0, t3, 34          post only when ready to record
-    0x3C048000,  # 29 lui   a0, 0x8000         (delay slot)
-    0x3484E003,  # 30 ori   a0, a0, 0xe003     same UI event as HTTP cmd 2001
-    0x24050001,  # 31 addiu a1, zero, 1        one parameter
-    0x0C03A0B0,  # 32 jal   Ux_PostEvent (0x800e82c0)
-    0x24060001,  # 33 addiu a2, zero, 1        (delay slot) par = 1: start
-    0x8FBF001C,  # 34 lw    ra, 0x1c(sp)
-    0x27BD0020,  # 35 addiu sp, sp, 0x20
-    0x24040002,  # 36 addiu a0, zero, 2        argument of the original call
-    0x08032932,  # 37 j     0x800ca4c8         original callee, returns to the timer handler
-    0x00000000,  # 38 nop
+    0x3C08805A,  # 12 lui   t0, 0x805a         --binclean: delete the update file now
+    0x8D0A21D4,  # 13 lw    t2, 0x21d4(t0)     (the file system is fully up by now)
+    0x11400004,  # 14 beqz  t2, 19
+    0xAD0021D4,  # 15 sw    zero, 0x21d4(t0)   (delay slot) only once
+    0x3C04803B,  # 16 lui   a0, 0x803b
+    0x0C03AB0E,  # 17 jal   FileSys_DeleteFile (0x800eac38)
+    0x2484E314,  # 18 addiu a0, a0, -0x1cec    (delay slot) stock string A:\SJCAM001.bin
+    0x0C06FE8E,  # 19 jal   0x801bfa38         movie record state: 1 ready, 2 recording
+    0x00000000,  # 20 nop
+    0x8FA90018,  # 21 lw    t1, 0x18(sp)
+    0x3C08803B,  # 22 lui   t0, 0x803b
+    0x000950C2,  # 23 srl   t2, t1, 3          attempt number 1, 2, ..
+    0x254A0060,  # 24 addiu t2, t2, 0x60       'a', 'b', ..
+    0xA10AFA88,  # 25 sb    t2, -0x578(t0)     status line, 1st character
+    0x244B0030,  # 26 addiu t3, v0, 0x30       record state digit
+    0xA10BFA89,  # 27 sb    t3, -0x577(t0)     status line, 2nd character
+    0x240B0002,  # 28 addiu t3, zero, 2
+    0x144B0005,  # 29 bne   v0, t3, 35
+    0x240B0001,  # 30 addiu t3, zero, 1        (delay slot)
+    0x3C08805A,  # 31 lui   t0, 0x805a         recording: stop trying
+    0x24090000 | AUTOREC_LIMIT,  # 32 addiu t1, zero, LIMIT
+    0x10000007,  # 33 b     41
+    0xAD0921D0,  # 34 sw    t1, 0x21d0(t0)     (delay slot)
+    0x144B0005,  # 35 bne   v0, t3, 41          post only when ready to record
+    0x3C048000,  # 36 lui   a0, 0x8000         (delay slot)
+    0x3484E003,  # 37 ori   a0, a0, 0xe003     same UI event as HTTP cmd 2001
+    0x24050001,  # 38 addiu a1, zero, 1        one parameter
+    0x0C03A0B0,  # 39 jal   Ux_PostEvent (0x800e82c0)
+    0x24060001,  # 40 addiu a2, zero, 1        (delay slot) par = 1: start
+    0x8FBF001C,  # 41 lw    ra, 0x1c(sp)
+    0x27BD0020,  # 42 addiu sp, sp, 0x20
+    0x24040002,  # 43 addiu a0, zero, 2        argument of the original call
+    0x08032932,  # 44 j     0x800ca4c8         original callee, returns to the timer handler
+    0x00000000,  # 45 nop
 ]
-assert len(CAVE3_CODE) == len(CAVE3_STOCK)
-VERSION_660 = 0x803AFA88  # "660", only read by the cmd 3012 handler
 JAL_CA4C8 = 0x0C032932  # jal 0x800ca4c8
 JAL_CAVE3 = 0x0C000000 | ((CAVE3 & 0x0FFFFFFF) >> 2)
 AUTOREC_HOOK = (0x801B08D0, JAL_CA4C8, JAL_CAVE3)
 
-# --binclean (code after the --autorec code)
-CAVE4 = CAVE3 + len(CAVE3_CODE) * 4  # 0x800cd240
-CAVE4_STOCK = [0xA7D6001C, 0xA3D5001E, 0xAFD40024, 0xA7D30028, 0xAFD20030, 0x8FFF0004, 0x2710D0A8,
-               0xAFDF0070, 0x8E100004]
+# --binclean (needs --autorec, whose timer code does the delete)
+CAVE4 = CAVE3 + len(CAVE3_CODE) * 4
 CAVE4_CODE = [
     0x27BDFFE0,  # 0 addiu sp, sp, -0x20
     0xAFBF001C,  # 1 sw    ra, 0x1c(sp)
     0x0C03AA1B,  # 2 jal   FileSys_CloseFile (0x800ea86c), a0 = handle
     0x00000000,  # 3 nop
-    0x0C03AB0E,  # 4 jal   FileSys_DeleteFile (0x800eac38)
-    0x27C40010,  # 5 addiu a0, fp, 0x10   (delay slot) caller's "A:\SJCAM001.bin" copy
-    0x8FBF001C,  # 6 lw    ra, 0x1c(sp)
-    0x03E00008,  # 7 jr    ra
-    0x27BD0020,  # 8 addiu sp, sp, 0x20
+    0x3C08805A,  # 4 lui   t0, 0x805a
+    0x24090001,  # 5 addiu t1, zero, 1
+    0xAD0921D4,  # 6 sw    t1, 0x21d4(t0)     delete pending
+    0x8FBF001C,  # 7 lw    ra, 0x1c(sp)
+    0x03E00008,  # 8 jr    ra
+    0x27BD0020,  # 9 addiu sp, sp, 0x20
 ]
-assert len(CAVE4_CODE) == len(CAVE4_STOCK)
+assert (CAVE4 - DSYSDMA) // 4 + len(CAVE4_CODE) <= len(DSYSDMA_STOCK)
 JAL_CAVE4 = 0x0C000000 | ((CAVE4 & 0x0FFFFFFF) >> 2)
 BINCLEAN_HOOK = [
     (0x801C676C, 0x3C028056, 0x00000000, "lui v0, 0x8056 -> nop (beqz delay slot)"),
-    (0x801C6770, 0x24030001, JAL_CAVE4, "li v1, 1 -> jal close+delete"),
+    (0x801C6770, 0x24030001, JAL_CAVE4, "li v1, 1 -> jal close + mark"),
     (0x801C6774, 0xA043C33C, 0x00402021, "sb v1, hold flag -> move a0, v0 (delay slot)"),
 ]
+
+
+def _put_code(img, start, code, what):
+    base = (start - DSYSDMA) // 4
+    return sum(_put(img, start + 4 * k, DSYSDMA_STOCK[base + k], w, what) for k, w in enumerate(code))
+
 
 RECONNECT = [(0x801C8214, SLTI_10, SLTI_MAX), (0x801C7F24, SLTI_10, SLTI_MAX)]
 
@@ -267,33 +305,24 @@ def _put(img, addr, old, new, what):
 def apply(img, led_off=False, reconnect=False, live720=False, leds_off=False, mute=False,
           autowifi=False, apfile=False, defaults=False, live15=False, autorec=False, binclean=False):
     n = 0
+    if binclean and not autorec:
+        raise ValueError("--binclean needs --autorec (the delete runs in its timer code)")
     if binclean:
-        for k, (old, new) in enumerate(zip(CAVE4_STOCK, CAVE4_CODE)):
-            n += _put(img, CAVE4 + 4 * k, old, new, "code cave 4")
+        n += _put_code(img, CAVE4, CAVE4_CODE, "code cave 4")
         for a, o, w, what in BINCLEAN_HOOK:
             n += _put(img, a, o, w, what)
-        a, o, w = CONSOLE_DSYSDMA_SLOT
-        n += _put(img, a, o, w, "console dsysdma slot")
     if autorec:
-        for k, (old, new) in enumerate(zip(CAVE3_STOCK, CAVE3_CODE)):
-            n += _put(img, CAVE3 + 4 * k, old, new, "code cave 3")
+        n += _put_code(img, CAVE3, CAVE3_CODE, "code cave 3")
         a, o, w = AUTOREC_HOOK
         n += _put(img, a, o, w, "link window timer hook")
-        a, o, w = CONSOLE_DSYSDMA_SLOT
-        n += _put(img, a, o, w, "console dsysdma slot")
     if apfile:
         addr, want = STATION_MARK
         if _word(img, addr) != want:
             raise ValueError("--apfile needs the station patch (patch_station.py) applied first")
-        for k, old in enumerate(CAVE2_STOCK):
-            a = CAVE2 + 4 * k
-            if k < len(GET_MODE):
-                new = GET_MODE[k]
-            else:
-                new = struct.unpack_from("<I", AP_PATH, 4 * (k - len(GET_MODE)))[0]
-            n += _put(img, a, old, new, "code cave 2")
+        n += _put_code(img, CAVE2, APFILE_CODE, "code cave 2")
         for a in MODE_SITES:
             n += _put(img, a, LI_V0_1, JAL_GET_MODE, "station mode constant")
+    if binclean or autorec or apfile:
         a, o, w = CONSOLE_DSYSDMA_SLOT
         n += _put(img, a, o, w, "console dsysdma slot")
     if defaults:
