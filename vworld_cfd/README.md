@@ -22,7 +22,7 @@ python -m http.server 8000
 # 브라우저 주소창에 직접 입력: http://localhost:8000/vworld_cfd_demo.html
 ```
 
-- **브이월드 지도로 보기**: `vworld_cfd_demo.html` 위쪽의 `VWORLD_KEY` 에 인증키를 넣습니다. 키 발급 시 `localhost` 를 서비스 URL 로 등록해야 합니다.
+- **브이월드 지도로 보기**: `vworld_cfd_demo.html` 위쪽 `<script id="vwScript" ...>` 주소의 `YOUR_VWORLD_KEY` 를 인증키로 바꿉니다. 키 발급 시 `localhost` 를 서비스 URL 로 등록해야 합니다.
 - **키 없이 미리보기**: 키를 넣지 않으면 CesiumJS + OpenStreetMap 배경으로 실행됩니다. 주소 뒤에 `?standalone=1` 을 붙여도 같습니다.
 
 ## 화면 기능
