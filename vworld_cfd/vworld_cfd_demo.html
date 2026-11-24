@@ -59,6 +59,7 @@ if (USE_VWORLD) {   // 브이월드 스크립트는 동적 로딩이 안 되므�
   <label><input type="checkbox" id="chkGlyph"> 벡터 화살표</label>
   <label><input type="checkbox" id="chkIso"> 등고면: 풍속 ≥ <input type="number" id="numIso" value="7" step="0.5" min="0"> m/s</label>
   <label><input type="checkbox" id="chkSensor" checked> 풍동 센서 (실험 / CFD)</label>
+  <label><input type="checkbox" id="chkBld" checked> CFD 건물 형상 (3D)</label>
   <hr>
   <label>높이 보정 <input type="number" id="numOff" value="0" step="1"> m
     <button id="btnGround" title="지도 지형이 다 뜬 뒤 누르면 지형 높이를 다시 읽습니다">지형 다시 읽기</button></label>
@@ -83,6 +84,7 @@ var SIZE_M = 600;
      "p":[..], "p_ref":0, "p_unit":"kinematic",       // (선택) 압력. kinematic = p/ρ (OpenFOAM 비압축성), 또는 "Pa"
      "sensors":[{"name":"S1","lon":..,"lat":..,"z":1.5,"measured":4.2}, ...]   // (선택) 풍동 측정 풍속
    }
+     "buildings":[{"polygon":[[lon,lat],[lon,lat],...],"height":60}, ...]      // (선택) CFD 에 쓴 건물 바닥 외곽선과 높이(m)
    배열 순서: 층(아래→위) → 행(남→북) → 열(서→동).  index = (kz*ny + j)*nx + i
    건물 내부 등 값이 없는 점은 u 에 null 을 넣는다.                                             */
 var raw = null;     // 불러온 원본 JSON
@@ -93,10 +95,16 @@ function makeSampleField() {
   var f = { west: CENTER.lon - h / mLon, east: CENTER.lon + h / mLon,
             south: CENTER.lat - h / mLat, north: CENTER.lat + h / mLat,
             nx: 81, ny: 81, nz: 7, z: [1.5, 5, 10, 15, 20, 25, 30], U_ref: 5, z_ref: 10,
-            u: [], v: [], w: [], k: [], p: [], p_ref: 0, p_unit: 'kinematic', sensors: [] };
+            u: [], v: [], w: [], k: [], p: [], p_ref: 0, p_unit: 'kinematic', sensors: [], buildings: [] };
   // 가상 건물 (x, y, 반경, 높이) – 원기둥 주위 포텐셜 유동 + 후류 감속을 흉내 낸 값
   var obs = [[-150, 80, 45, 60], [-40, -120, 55, 80], [90, 60, 50, 45], [160, -150, 40, 18], [20, 190, 35, 70]];
   var r3 = function (x) { return Math.round(x * 1000) / 1000; };
+  obs.forEach(function (o) {            // 가상 건물을 24각형 기둥으로 등록 (3D 표시용)
+    var poly = [];
+    for (var n = 0; n < 24; n++) { var th = 2 * Math.PI * n / 24;
+      poly.push([CENTER.lon + (o[0] + o[2] * Math.cos(th)) / mLon, CENTER.lat + (o[1] + o[2] * Math.sin(th)) / mLat]); }
+    f.buildings.push({ polygon: poly, height: o[3] });
+  });
   for (var kz = 0; kz < f.nz; kz++) for (var j = 0; j < f.ny; j++) for (var i = 0; i < f.nx; i++) {
     var x = -h + SIZE_M * i / (f.nx - 1), y = -h + SIZE_M * j / (f.ny - 1), z = f.z[kz];
     var Uin = f.U_ref * Math.pow(z / f.z_ref, 0.25);          // 멱법칙 유입 프로파일
@@ -153,6 +161,7 @@ function normalizeField(r) {
   f.pScale = (r.p_unit === 'Pa') ? 1 / (r.rho || 1.225) : 1;   // 내부는 kinematic 으로 통일
   f.pRef = +r.p_ref || 0;
   f.sensors = r.sensors || [];
+  f.buildings = r.buildings || [];
   f.W = (f.east - f.west) * 111320 * Math.cos((f.south + f.north) / 2 * Math.PI / 180);
   f.H = (f.north - f.south) * 111320;
   return f;
@@ -420,6 +429,19 @@ function drawSensors() {
   });
 }
 
+/* (7) CFD 건물 형상: 바닥 외곽선을 높이만큼 세운 기둥 */
+function drawBuildings() {
+  var f = F, ds = DS.bld; ds.entities.removeAll();
+  f.buildings.forEach(function (b) {
+    if (!b.polygon || b.polygon.length < 3 || !(b.height > 0)) return;
+    var flat = [], cx = 0, cy = 0;
+    b.polygon.forEach(function (p) { flat.push(p[0], p[1]); cx += p[0]; cy += p[1]; });
+    var g = groundAt((cx / b.polygon.length - f.west) / (f.east - f.west), (cy / b.polygon.length - f.south) / (f.north - f.south));
+    ds.entities.add({ polygon: { hierarchy: C.Cartesian3.fromDegreesArray(flat), height: g, extrudedHeight: g + b.height,
+                                 material: new C.Color(0.82, 0.84, 0.88, 0.92), outline: true, outlineColor: new C.Color(0.25, 0.28, 0.33, 1) } });
+  });
+}
+
 /* ===== 화면 갱신 ===== */
 function say(t) { document.getElementById('msg').textContent = t || ''; }
 function fmt(v) { return Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2); }
@@ -434,10 +456,10 @@ function updateLegend() {
   document.getElementById('zLabel').textContent = '지상 ' + F.z[layerIdx()] + ' m' + (isGroundLayer(layerIdx()) ? ' (지표 표시)' : '');
 }
 function drawLayer() { updateLegend(); drawHeat(); drawLines(); drawGlyphs(); applyToggles(); }
-function drawAll() { computeGround(); computeVar(); drawLayer(); drawIso(); drawSensors(); applyToggles(); }
+function drawAll() { computeGround(); computeVar(); drawLayer(); drawIso(); drawSensors(); drawBuildings(); applyToggles(); }
 
 function applyToggles() {
-  [['chkHeat','heat'],['chkLine','line'],['chkPart','part'],['chkGlyph','glyph'],['chkSensor','sensor']].forEach(function (p) {
+  [['chkHeat','heat'],['chkLine','line'],['chkPart','part'],['chkGlyph','glyph'],['chkSensor','sensor'],['chkBld','bld']].forEach(function (p) {
     DS[p[1]].show = document.getElementById(p[0]).checked;
   });
   if (isoPrim) isoPrim.show = document.getElementById('chkIso').checked;
@@ -451,6 +473,7 @@ function setField(r, name) {
   curVar = sel.value;
   var rz = document.getElementById('rngZ'); rz.max = F.nz - 1; rz.value = 0; rz.disabled = F.nz < 2;
   document.getElementById('chkIso').disabled = F.nz < 2;
+  document.getElementById('chkBld').disabled = !F.buildings.length;
   document.getElementById('src').textContent = '데이터: ' + name;
   drawAll();
   if (F.UrefGuessed) say('U_ref 가 없어 최상층 평균 풍속(' + F.Uref.toFixed(2) + ' m/s)을 기준 풍속으로 사용했습니다.');
@@ -458,7 +481,7 @@ function setField(r, name) {
 
 var raf = 0;
 function later(fn) { cancelAnimationFrame(raf); raf = requestAnimationFrame(fn); }
-['chkHeat','chkLine','chkPart','chkSensor'].forEach(function (id) { document.getElementById(id).onchange = applyToggles; });
+['chkHeat','chkLine','chkPart','chkSensor','chkBld'].forEach(function (id) { document.getElementById(id).onchange = applyToggles; });
 document.getElementById('chkGlyph').onchange = function () { drawGlyphs(); applyToggles(); };
 document.getElementById('chkIso').onchange = function () { say(''); drawIso(); };
 document.getElementById('numIso').onchange = function () { say(''); drawIso(); };
@@ -487,11 +510,11 @@ document.getElementById('file').onchange = function (ev) {
 /* ===== 지도 시작 ===== */
 function onViewerReady(v) {
   viewer = v; C = window.Cesium;
-  ['heat','line','part','glyph','sensor'].forEach(function (k) { DS[k] = new C.CustomDataSource(k); viewer.dataSources.add(DS[k]); });
+  ['heat','line','part','glyph','sensor','bld'].forEach(function (k) { DS[k] = new C.CustomDataSource(k); viewer.dataSources.add(DS[k]); });
   setField(makeSampleField(), '샘플(가상 유동장, 실제 CFD·풍동 결과 아님)');
   var n = 0, t = setInterval(function () {      // 지형이 다 뜨면 높이를 다시 읽어 반영
     if (!groundPending || ++n > 60) { clearInterval(t); return; }
-    if (viewer.scene.globe.tilesLoaded) { clearInterval(t); computeGround(); drawLayer(); drawIso(); drawSensors(); applyToggles(); }
+    if (viewer.scene.globe.tilesLoaded) { clearInterval(t); computeGround(); drawLayer(); drawIso(); drawSensors(); drawBuildings(); applyToggles(); }
   }, 1000);
 }
 
