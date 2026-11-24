@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>CFD 풍환경 결과 – 브이월드 3D 데모</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body, #vmap { width: 100%; height: 100%; margin: 0; overflow: hidden; font-family: "Malgun Gothic", sans-serif; }
+  #panel { position: absolute; top: 12px; left: 12px; z-index: 10; background: rgba(20,24,32,.88); color: #fff;
+           padding: 12px 14px; border-radius: 8px; font-size: 13px; width: 250px; max-height: calc(100% - 48px); overflow-y: auto; }
+  #panel h1 { font-size: 15px; margin: 0 0 6px; }
+  #panel label { display: block; margin: 4px 0; }
+  #panel select, #panel input[type=range] { width: 100%; box-sizing: border-box; }
+  #panel input[type=number] { width: 58px; }
+  #panel hr { border: 0; border-top: 1px solid #445; margin: 8px 0; }
+  #panel button { font-size: 12px; margin: 2px 2px 2px 0; }
+  #bar { height: 12px; border-radius: 3px; margin: 8px 0 2px; }
+  #ticks { display: flex; justify-content: space-between; font-size: 11px; }
+  #src { font-size: 11px; color: #ffd27a; margin-top: 6px; }
+  #msg { font-size: 11px; color: #ff9c9c; margin-top: 6px; white-space: pre-wrap; }
+  .sub { font-size: 11px; color: #b9c2d0; }
+</style>
+
+<script>
+/* ★ 1) 여기에 브이월드 인증키를 넣으세요.
+      키가 없으면(또는 주소 뒤에 ?standalone=1 을 붙이면) 브이월드 없이 CesiumJS 단독 미리보기로 실행됩니다. */
+var VWORLD_KEY = 'YOUR_VWORLD_KEY';
+var USE_VWORLD = VWORLD_KEY && VWORLD_KEY !== 'YOUR_VWORLD_KEY' && !/[?&]standalone=1/.test(location.search);
+if (USE_VWORLD) {   // 브이월드 스크립트는 동적 로딩이 안 되므로 파싱 중에 정적 태그로 써 넣는다
+  document.write('<script src="https://map.vworld.kr/js/webglMapInit.js.do?version=3.0&apiKey=' +
+                 encodeURIComponent(VWORLD_KEY) + '"><\/script>');
+}
+</script>
+</head>
+<body>
+<div id="vmap"></div>
+<div id="panel">
+  <h1 id="title">풍속</h1>
+  <div id="bar"></div>
+  <div id="ticks"><span id="vminLabel">0</span><span id="vmaxLabel">–</span></div>
+
+  <label>표시 변수
+    <select id="selVar">
+      <option value="speed">풍속 |U| (m/s)</option>
+      <option value="ratio">풍속비 |U| / U_ref</option>
+      <option value="ti">난류 강도 (%) – k 사용</option>
+      <option value="gust">돌풍 풍속 U+3.5σ (m/s) – k 사용</option>
+      <option value="cp">압력계수 Cp – p 사용</option>
+    </select>
+  </label>
+  <label>높이(층): <b id="zLabel">–</b>
+    <input type="range" id="rngZ" min="0" max="0" step="1" value="0">
+  </label>
+  <label>단면 불투명도 <input type="range" id="rngAlpha" min="0.2" max="1" step="0.05" value="0.7"></label>
+  <hr>
+  <label><input type="checkbox" id="chkHeat" checked> 단면 분포</label>
+  <label><input type="checkbox" id="chkLine" checked> 유선</label>
+  <label><input type="checkbox" id="chkPart" checked> 입자 애니메이션</label>
+  <label><input type="checkbox" id="chkGlyph"> 벡터 화살표</label>
+  <label><input type="checkbox" id="chkIso"> 등고면: 풍속 ≥ <input type="number" id="numIso" value="7" step="0.5" min="0"> m/s</label>
+  <label><input type="checkbox" id="chkSensor" checked> 풍동 센서 (실험 / CFD)</label>
+  <hr>
+  <label>높이 보정 <input type="number" id="numOff" value="0" step="1"> m
+    <button id="btnGround" title="지도 지형이 다 뜬 뒤 누르면 지형 높이를 다시 읽습니다">지형 다시 읽기</button></label>
+  <label>CFD 결과(JSON) 불러오기<br><input type="file" id="file" accept=".json"></label>
+  <button id="btnSave">현재 데이터 JSON 저장</button>
+  <div id="src">데이터: 샘플(가상 유동장, 실제 CFD·풍동 결과 아님)</div>
+  <div id="msg"></div>
+</div>
+
+<script>
+/* ===== 2) 샘플 대상지 (기본: 강남역 일대 600 m × 600 m) ===== */
+var CENTER = { lon: 127.0276, lat: 37.4979 };
+var SIZE_M = 600;
+
+/* ===== 결과 데이터(JSON) 규격 =====
+   { "west":..,"south":..,"east":..,"north":..,      // 경위도(EPSG:4326)
+     "nx":N, "ny":M, "nz":L,                          // 격자 수 (nz 생략 시 1층)
+     "z":[1.5, 5, 10, ...],                           // 각 층의 지상 높이(m), 오름차순
+     "U_ref":5, "z_ref":10,                           // 기준 풍속(m/s)과 그 높이 – 풍속비, Cp 계산용
+     "u":[..], "v":[..], "w":[..],                    // m/s, 동(+)/북(+)/위(+), 길이 nx*ny*nz
+     "k":[..],                                        // (선택) 난류 운동에너지 m²/s²
+     "p":[..], "p_ref":0, "p_unit":"kinematic",       // (선택) 압력. kinematic = p/ρ (OpenFOAM 비압축성), 또는 "Pa"
+     "sensors":[{"name":"S1","lon":..,"lat":..,"z":1.5,"measured":4.2}, ...]   // (선택) 풍동 측정 풍속
+   }
+   배열 순서: 층(아래→위) → 행(남→북) → 열(서→동).  index = (kz*ny + j)*nx + i
+   건물 내부 등 값이 없는 점은 u 에 null 을 넣는다.                                             */
+var raw = null;     // 불러온 원본 JSON
+var F = null;       // 정규화된 필드
+
+function makeSampleField() {
+  var mLat = 111320, mLon = 111320 * Math.cos(CENTER.lat * Math.PI / 180), h = SIZE_M / 2;
+  var f = { west: CENTER.lon - h / mLon, east: CENTER.lon + h / mLon,
+            south: CENTER.lat - h / mLat, north: CENTER.lat + h / mLat,
+            nx: 81, ny: 81, nz: 7, z: [1.5, 5, 10, 15, 20, 25, 30], U_ref: 5, z_ref: 10,
+            u: [], v: [], w: [], k: [], p: [], p_ref: 0, p_unit: 'kinematic', sensors: [] };
+  // 가상 건물 (x, y, 반경, 높이) – 원기둥 주위 포텐셜 유동 + 후류 감속을 흉내 낸 값
+  var obs = [[-150, 80, 45, 60], [-40, -120, 55, 80], [90, 60, 50, 45], [160, -150, 40, 18], [20, 190, 35, 70]];
+  var r3 = function (x) { return Math.round(x * 1000) / 1000; };
+  for (var kz = 0; kz < f.nz; kz++) for (var j = 0; j < f.ny; j++) for (var i = 0; i < f.nx; i++) {
+    var x = -h + SIZE_M * i / (f.nx - 1), y = -h + SIZE_M * j / (f.ny - 1), z = f.z[kz];
+    var Uin = f.U_ref * Math.pow(z / f.z_ref, 0.25);          // 멱법칙 유입 프로파일
+    var u = Uin, v = 0, w = 0, inside = false, wake = 0;
+    obs.forEach(function (o) {
+      var dx = x - o[0], dy = y - o[1], r2 = dx * dx + dy * dy, R = o[2], R2 = R * R, H = o[3], r = Math.sqrt(r2);
+      if (r2 < R2 && z < H) { inside = true; return; }
+      if (r2 < R2) r2 = R2;                                   // 지붕 위: 발산 방지
+      var a = z < H ? 1 : Math.exp(-(z - H) / (0.25 * H + 3)); // 건물 높이 위에서는 영향 감소
+      u += -Uin * a * R2 * (dx * dx - dy * dy) / (r2 * r2);
+      v += -Uin * a * 2 * R2 * dx * dy / (r2 * r2);
+      if (dx > 0) wake = Math.max(wake, 0.5 * a * Math.exp(-dx / (5 * R)) * Math.exp(-Math.pow(dy / (0.9 * R), 2)));
+      if (r > 1) w += 0.35 * Uin * (-dx / r) * Math.exp(-Math.pow((r - R) / (0.8 * R), 2)) * Math.exp(-Math.pow((z - H) / (0.35 * H), 2));
+    });
+    u *= 1 - wake; v *= 1 - wake;
+    var sig = 0.18 * Math.pow(z / f.z_ref, -0.1) * Uin * (1 + 1.2 * wake);
+    if (inside) { f.u.push(null); f.v.push(null); f.w.push(null); f.k.push(null); f.p.push(null); }
+    else { f.u.push(r3(u)); f.v.push(r3(v)); f.w.push(r3(w)); f.k.push(r3(1.5 * sig * sig));
+           f.p.push(r3(0.5 * (Uin * Uin - (u * u + v * v + w * w)))); }
+  }
+  // 가상 풍동 센서: CFD 값에 정해진 오차를 준 값을 "측정값"으로 사용
+  var tmp = normalizeField(f);
+  var sp = [[-240, 0, 1.5, .04], [-150, 150, 1.5, -.08], [-95, -45, 1.5, .12], [70, -30, 1.5, -.03],
+            [90, 130, 1.5, .22], [200, 40, 1.5, -.15], [-40, -190, 10, .06], [225, -70, 10, -.31]];
+  sp.forEach(function (s, n) {
+    var fx = (s[0] + h) / SIZE_M, fy = (s[1] + h) / SIZE_M, c = tri(tmp, tmp.spd, fx, fy, zToIdx(tmp, s[2]));
+    f.sensors.push({ name: 'S' + (n + 1), lon: f.west + fx * (f.east - f.west), lat: f.south + fy * (f.north - f.south),
+                     z: s[2], measured: Math.round(c * (1 + s[3]) * 100) / 100 });
+  });
+  return f;
+}
+
+/* ===== 원본 JSON → 내부 필드 ===== */
+function normalizeField(r) {
+  var f = { west: +r.west, south: +r.south, east: +r.east, north: +r.north, nx: r.nx | 0, ny: r.ny | 0, nz: (r.nz | 0) || 1 };
+  f.z = (r.z && r.z.length) ? r.z.map(Number) : [1.5];
+  var n = f.nx * f.ny * f.nz;
+  if (!(f.nx > 1 && f.ny > 1)) throw new Error('nx, ny 는 2 이상이어야 합니다.');
+  if (f.z.length !== f.nz) throw new Error('z 배열 길이가 nz 와 다릅니다.');
+  if (!r.u || !r.v || r.u.length !== n || r.v.length !== n) throw new Error('u, v 길이가 nx*ny*nz 와 다릅니다.');
+  ['w', 'k', 'p'].forEach(function (key) { if (r[key] && r[key].length !== n) throw new Error(key + ' 길이가 nx*ny*nz 와 다릅니다.'); });
+  f.n = n; f.solid = new Uint8Array(n);
+  function arr(a) { var o = new Float32Array(n); if (a) for (var q = 0; q < n; q++) o[q] = a[q] == null ? 0 : a[q]; return o; }
+  for (var q = 0; q < n; q++) if (r.u[q] == null || r.v[q] == null) f.solid[q] = 1;
+  f.u = arr(r.u); f.v = arr(r.v); f.w = arr(r.w);
+  f.hasK = !!r.k; f.hasP = !!r.p; f.k = arr(r.k); f.p = arr(r.p);
+  f.spd = new Float32Array(n);
+  for (q = 0; q < n; q++) f.spd[q] = Math.hypot(f.u[q], f.v[q], f.w[q]);
+  f.Uref = +r.U_ref;
+  if (!(f.Uref > 0)) {            // 기준 풍속이 없으면 최상층 평균 풍속으로 대신한다
+    var s = 0, c = 0; for (q = n - f.nx * f.ny; q < n; q++) if (!f.solid[q]) { s += f.spd[q]; c++; }
+    f.Uref = c ? s / c : 1; f.UrefGuessed = true;
+  }
+  f.pScale = (r.p_unit === 'Pa') ? 1 / (r.rho || 1.225) : 1;   // 내부는 kinematic 으로 통일
+  f.pRef = +r.p_ref || 0;
+  f.sensors = r.sensors || [];
+  f.W = (f.east - f.west) * 111320 * Math.cos((f.south + f.north) / 2 * Math.PI / 180);
+  f.H = (f.north - f.south) * 111320;
+  return f;
+}
+
+/* ===== 파생 변수 ===== */
+var VARS = {
+  speed: { title: '풍속 (m/s)', need: null, div: false },
+  ratio: { title: '풍속비 |U|/U_ref', need: null, div: false },
+  ti:    { title: '난류 강도 (%)', need: 'hasK', div: false },
+  gust:  { title: '돌풍 풍속 U+3.5σ (m/s)', need: 'hasK', div: false },
+  cp:    { title: '압력계수 Cp', need: 'hasP', div: true }
+};
+var curVar = 'speed', val = null, vmin = 0, vmax = 1;
+
+function computeVar() {
+  var f = F, n = f.n; val = new Float32Array(n);
+  for (var q = 0; q < n; q++) {
+    var s = f.spd[q], sig = Math.sqrt(Math.max(0, f.k[q]) * 2 / 3);
+    val[q] = curVar === 'speed' ? s :
+             curVar === 'ratio' ? s / f.Uref :
+             curVar === 'ti'    ? Math.min(100, 100 * sig / Math.max(s, 0.1 * f.Uref)) :   // 정체 구역 발산 방지
+             curVar === 'gust'  ? s + 3.5 * sig :
+                                  (f.p[q] * f.pScale - f.pRef) / (0.5 * f.Uref * f.Uref);
+  }
+  // 색 범위: 전 층 공통(층끼리 비교 가능), 99 백분위로 이상값 배제
+  var smp = [], st = Math.max(1, Math.floor(n / 20000));
+  for (q = 0; q < n; q += st) if (!f.solid[q]) smp.push(VARS[curVar].div ? Math.abs(val[q]) : val[q]);
+  smp.sort(function (a, b) { return a - b; });
+  var hi = smp.length ? smp[Math.floor(0.99 * (smp.length - 1))] : 1;
+  if (!(hi > 0)) hi = 1;
+  vmax = hi; vmin = VARS[curVar].div ? -hi : 0;
+}
+
+var RAMP_SEQ = [[43,59,214],[31,182,224],[53,208,127],[242,224,58],[240,138,36],[215,38,43]];
+var RAMP_DIV = [[33,72,181],[120,160,230],[245,245,245],[236,140,120],[190,30,40]];
+function ramp(t) {                   // 0~1 → [r,g,b]
+  var c = VARS[curVar].div ? RAMP_DIV : RAMP_SEQ;
+  t = Math.max(0, Math.min(0.9999, t)) * (c.length - 1);
+  var i = Math.floor(t), a = t - i;
+  return [0,1,2].map(function (n) { return Math.round(c[i][n] * (1 - a) + c[i + 1][n] * a); });
+}
+function colorOf(v) { return ramp((v - vmin) / (vmax - vmin)); }
+
+/* ===== 보간 ===== */
+function zToIdx(f, z) {              // 지상 높이(m) → 실수 층 번호
+  var zs = f.z; if (f.nz < 2 || z <= zs[0]) return 0;
+  for (var k = 0; k < f.nz - 1; k++) if (z <= zs[k + 1]) return k + (z - zs[k]) / (zs[k + 1] - zs[k]);
+  return f.nz - 1;
+}
+function idxToZ(f, fz) {
+  if (f.nz < 2) return f.z[0];
+  var k = Math.max(0, Math.min(f.nz - 2, Math.floor(fz)));
+  return f.z[k] + (fz - k) * (f.z[k + 1] - f.z[k]);
+}
+function isSolid(f, fx, fy, fz) {    // 가장 가까운 격자점이 건물인지
+  var i = Math.round(Math.max(0, Math.min(1, fx)) * (f.nx - 1)), j = Math.round(Math.max(0, Math.min(1, fy)) * (f.ny - 1));
+  var k = Math.round(Math.max(0, Math.min(f.nz - 1, fz)));
+  return f.solid[(k * f.ny + j) * f.nx + i] === 1;
+}
+function tri(f, arr, fx, fy, fz) {   // fx, fy: 0~1 (서→동, 남→북), fz: 실수 층 번호. 삼선형 보간
+  var gx = fx * (f.nx - 1), gy = fy * (f.ny - 1);
+  var i = Math.max(0, Math.min(f.nx - 2, Math.floor(gx))), j = Math.max(0, Math.min(f.ny - 2, Math.floor(gy)));
+  var a = gx - i, b = gy - j;
+  function plane(k) { var q = (k * f.ny + j) * f.nx + i;
+    return (arr[q] * (1 - a) + arr[q + 1] * a) * (1 - b) + (arr[q + f.nx] * (1 - a) + arr[q + f.nx + 1] * a) * b; }
+  if (f.nz < 2) return plane(0);
+  var k0 = Math.max(0, Math.min(f.nz - 2, Math.floor(fz))), c = Math.max(0, Math.min(1, fz - k0));
+  return plane(k0) * (1 - c) + plane(k0 + 1) * c;
+}
+
+/* ===== 지도 객체 ===== */
+var viewer, C, DS = {}, isoPrim = null;
+var gh = null, ghMean = 0;           // 격자점별 지형 높이(m)와 평균
+
+var groundPending = false;           // 지형 타일이 덜 떠서 높이를 아직 못 읽은 상태
+function computeGround() {           // 지도 지형에서 격자점 높이를 읽는다
+  var f = F, off = +document.getElementById('numOff').value || 0, s = 0, globe = viewer.scene.globe;
+  // 타일이 다 뜨기 전에는 거친 타일에서 엉뚱한 높이가 나오므로 읽지 않고 0 으로 둔다
+  var ready = globe.tilesLoaded !== false; groundPending = !ready;
+  gh = new Float32Array(f.nx * f.ny);
+  for (var j = 0; j < f.ny; j++) for (var i = 0; i < f.nx; i++) {
+    var lon = f.west + (f.east - f.west) * i / (f.nx - 1), lat = f.south + (f.north - f.south) * j / (f.ny - 1);
+    var hgt = 0; if (ready) { try { hgt = globe.getHeight(C.Cartographic.fromDegrees(lon, lat)); } catch (e) {} }
+    if (!(hgt > -200 && hgt < 5000)) hgt = 0;             // 비정상 값 배제
+    gh[j * f.nx + i] = hgt + off; s += gh[j * f.nx + i];
+  }
+  ghMean = s / gh.length;
+}
+function groundAt(fx, fy) {
+  var f = F, gx = Math.max(0, Math.min(1, fx)) * (f.nx - 1), gy = Math.max(0, Math.min(1, fy)) * (f.ny - 1);
+  var i = Math.min(f.nx - 2, Math.floor(gx)), j = Math.min(f.ny - 2, Math.floor(gy)), a = gx - i, b = gy - j, q = j * f.nx + i;
+  return (gh[q] * (1 - a) + gh[q + 1] * a) * (1 - b) + (gh[q + f.nx] * (1 - a) + gh[q + f.nx + 1] * a) * b;
+}
+function lonOf(fx) { return F.west + fx * (F.east - F.west); }
+function latOf(fy) { return F.south + fy * (F.north - F.south); }
+function pos(fx, fy, zAbove) { return C.Cartesian3.fromDegrees(lonOf(fx), latOf(fy), groundAt(fx, fy) + zAbove); }
+function cssColor(c, a) { return C.Color.fromBytes(c[0], c[1], c[2], a == null ? 255 : a); }
+
+function layerIdx() { return +document.getElementById('rngZ').value; }
+function isGroundLayer(kz) { return F.z[kz] <= 2; }      // 보행자 높이 층은 지표에 붙여서 표시
+
+/* (1) 단면 분포 */
+function drawHeat() {
+  var f = F, kz = layerIdx(), ds = DS.heat; ds.entities.removeAll();
+  var N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+  var ctx = cv.getContext('2d'), img = ctx.createImageData(N, N);
+  for (var py = 0; py < N; py++) for (var px = 0; px < N; px++) {
+    var fx = px / (N - 1), fy = 1 - py / (N - 1), o = (py * N + px) * 4;
+    if (isSolid(f, fx, fy, kz)) { img.data[o + 3] = 0; continue; }
+    var c = colorOf(tri(f, val, fx, fy, kz));
+    img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  var alpha = +document.getElementById('rngAlpha').value;
+  var rect = { coordinates: C.Rectangle.fromDegrees(f.west, f.south, f.east, f.north),
+               material: new C.ImageMaterialProperty({ image: cv, transparent: true, color: new C.Color(1, 1, 1, alpha) }) };
+  if (isGroundLayer(kz)) { if (C.ClassificationType) rect.classificationType = C.ClassificationType.TERRAIN; }  // 지형에만 드레이프
+  else rect.height = ghMean + f.z[kz];                                                                          // 공중에 띄움
+  ds.entities.add({ rectangle: rect });
+}
+
+/* (2) 유선 + (3) 입자: 선택한 층 높이에서 출발, w 가 있으면 3차원으로 적분 */
+function drawLines() {
+  var f = F, kz = layerIdx(), ground = isGroundLayer(kz);
+  DS.line.entities.removeAll(); DS.part.entities.removeAll();
+  var step = Math.min(f.W, f.H) / 150, NS = 20, eps = 0.05 * f.Uref, zLo = f.z[0], zHi = f.z[f.nz - 1];
+  function vel(x, y, fz) { return [tri(f, f.u, x, y, fz), tri(f, f.v, x, y, fz), tri(f, f.w, x, y, fz)]; }
+  for (var sIdx = 0; sIdx < NS * 4; sIdx++) {
+    // 네 변 모두에서 시드, 안쪽으로 유입되는 지점만 사용 (풍향을 몰라도 잡히도록)
+    var side = Math.floor(sIdx / NS), t = (sIdx % NS + 0.5) / NS;
+    var x = side === 0 ? 0.004 : side === 1 ? 0.996 : t, y = side === 2 ? 0.004 : side === 3 ? 0.996 : t, z = f.z[kz];
+    // 가장자리에 값이 없으면(회전된 도메인 등) 값이 있는 곳까지 안쪽으로 이동
+    var inX = side === 0 ? 1 : side === 1 ? -1 : 0, inY = side === 2 ? 1 : side === 3 ? -1 : 0;
+    for (var hop = 0; hop < 60 && isSolid(f, x, y, kz); hop++) { x += inX * 0.008; y += inY * 0.008; }
+    if (isSolid(f, x, y, kz)) continue;
+    var v0 = vel(x, y, kz), inflow = v0[0] * inX + v0[1] * inY;
+    if (inflow <= eps) continue;
+    var P = [], T = [], tAcc = 0, sum = 0;
+    for (var it = 0; it < 700; it++) {
+      var fz = zToIdx(f, z);
+      if (isSolid(f, x, y, fz)) break;
+      var a = vel(x, y, fz), sa = Math.hypot(a[0], a[1], a[2]);
+      if (sa < eps) break;
+      var xm = x + a[0] / sa * step / f.W / 2, ym = y + a[1] / sa * step / f.H / 2, zm = z + a[2] / sa * step / 2;   // RK2
+      var b = vel(xm, ym, zToIdx(f, zm)), sb = Math.hypot(b[0], b[1], b[2]);
+      if (sb < eps) break;
+      P.push([x, y, z]); T.push(tAcc); tAcc += step / sb; sum += tri(f, val, x, y, fz);
+      x += b[0] / sb * step / f.W; y += b[1] / sb * step / f.H; z = Math.max(zLo, Math.min(zHi, z + b[2] / sb * step));
+      if (x < 0 || x > 1 || y < 0 || y > 1) break;
+    }
+    if (P.length < 8) continue;
+    var col = colorOf(sum / P.length);
+    var cart = P.map(function (p) { return ground ? C.Cartesian3.fromDegrees(lonOf(p[0]), latOf(p[1])) : pos(p[0], p[1], p[2]); });
+    DS.line.entities.add({ polyline: { positions: cart, width: 2.5, clampToGround: ground, material: cssColor(col) } });
+    // 입자: 실제 풍속에 비례해 움직이도록 등시간 간격으로 다시 샘플
+    var M = P.length, uni = [], q = 0;
+    for (var m = 0; m < M; m++) { var tt = tAcc * m / M; while (q < M - 1 && T[q + 1] <= tt) q++; uni.push(cart[q]); }
+    [0, 0.5].forEach(function (ph) {
+      (function (list, total, phase) {
+        var t0 = Date.now();
+        DS.part.entities.add({
+          position: new C.CallbackProperty(function () {
+            var s = ((Date.now() - t0) / 1000 * 12 / total + phase) % 1;   // 12배속
+            return list[Math.floor(s * list.length)];
+          }, false),
+          point: { pixelSize: 6, color: C.Color.WHITE, outlineColor: C.Color.BLACK, outlineWidth: 1,
+                   heightReference: ground ? C.HeightReference.CLAMP_TO_GROUND : C.HeightReference.NONE,
+                   disableDepthTestDistance: ground ? Number.POSITIVE_INFINITY : 0 }
+        });
+      })(uni, tAcc, ph + sIdx * 0.137);
+    });
+  }
+}
+
+/* (4) 벡터 화살표: 약 25 m 간격, 길이 ∝ 풍속 */
+function drawGlyphs() {
+  var f = F, kz = layerIdx(), ground = isGroundLayer(kz), ds = DS.glyph; ds.entities.removeAll();
+  if (!document.getElementById('chkGlyph').checked) return;       // 꺼져 있으면 만들지 않는다
+  var dx = f.W / (f.nx - 1), st = Math.max(1, Math.round(25 / dx)), L0 = st * dx * 0.9, smax = 0;
+  for (var q = kz * f.nx * f.ny; q < (kz + 1) * f.nx * f.ny; q++) smax = Math.max(smax, f.spd[q]);
+  for (var j = st >> 1; j < f.ny; j += st) for (var i = st >> 1; i < f.nx; i += st) {
+    var q2 = (kz * f.ny + j) * f.nx + i, s = Math.hypot(f.u[q2], f.v[q2]);
+    if (f.solid[q2] || s < 0.03 * smax) continue;
+    var L = Math.max(0.25, s / smax) * L0, fx = i / (f.nx - 1), fy = j / (f.ny - 1);
+    var ex = f.u[q2] / s * L / 2 / f.W, ey = f.v[q2] / s * L / 2 / f.H, zz = f.z[kz] + 0.5;
+    var p = ground ? [C.Cartesian3.fromDegrees(lonOf(fx - ex), latOf(fy - ey)), C.Cartesian3.fromDegrees(lonOf(fx + ex), latOf(fy + ey))]
+                   : [pos(fx - ex, fy - ey, zz), pos(fx + ex, fy + ey, zz)];
+    ds.entities.add({ polyline: { positions: p, width: 9, clampToGround: ground,
+                                  material: new C.PolylineArrowMaterialProperty(cssColor(colorOf(val[q2]))) } });
+  }
+}
+
+/* (5) 등고면: 풍속 ≥ 임계값인 영역의 경계면 (마칭 테트라헤드라) */
+function drawIso() {
+  var f = F;
+  if (isoPrim) { viewer.scene.primitives.remove(isoPrim); isoPrim = null; }
+  if (f.nz < 2 || !document.getElementById('chkIso').checked) return;
+  var thr = +document.getElementById('numIso').value;
+  if (!(thr > 0)) return;
+  var nx = f.nx, ny = f.ny, nxy = nx * ny, P = new Float64Array(f.n * 3), tmp = new C.Cartesian3();
+  for (var k = 0; k < f.nz; k++) for (var j = 0; j < ny; j++) for (var i = 0; i < nx; i++) {
+    var q = (k * ny + j) * nx + i;
+    C.Cartesian3.fromDegrees(lonOf(i / (nx - 1)), latOf(j / (ny - 1)), gh[j * nx + i] + f.z[k], C.Ellipsoid.WGS84, tmp);
+    P[3 * q] = tmp.x; P[3 * q + 1] = tmp.y; P[3 * q + 2] = tmp.z;
+  }
+  var OFF = [0, 1, nx + 1, nx, nxy, nxy + 1, nxy + nx + 1, nxy + nx];             // 육면체 꼭짓점 8개
+  var TET = [[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];        // 사면체 6개로 분할
+  var out = [];
+  function cut(a, b) {               // 변 a-b 위에서 임계값과 만나는 점
+    var va = f.spd[a], vb = f.spd[b], t = (thr - va) / (vb - va);
+    out.push(P[3*a] + t * (P[3*b] - P[3*a]), P[3*a+1] + t * (P[3*b+1] - P[3*a+1]), P[3*a+2] + t * (P[3*b+2] - P[3*a+2]));
+  }
+  for (k = 0; k < f.nz - 1; k++) for (j = 0; j < ny - 1; j++) for (i = 0; i < nx - 1; i++) {
+    var base = (k * ny + j) * nx + i, any = 0;
+    for (var c = 0; c < 8; c++) if (f.spd[base + OFF[c]] >= thr) any++;
+    if (any === 0 || any === 8) continue;
+    for (var tIdx = 0; tIdx < 6; tIdx++) {
+      var ins = [], outs = [];
+      for (c = 0; c < 4; c++) { var id = base + OFF[TET[tIdx][c]]; (f.spd[id] >= thr ? ins : outs).push(id); }
+      if (ins.length === 1) { cut(ins[0], outs[0]); cut(ins[0], outs[1]); cut(ins[0], outs[2]); }
+      else if (ins.length === 3) { cut(outs[0], ins[0]); cut(outs[0], ins[1]); cut(outs[0], ins[2]); }
+      else if (ins.length === 2) {
+        cut(ins[0], outs[0]); cut(ins[0], outs[1]); cut(ins[1], outs[0]);
+        cut(ins[1], outs[0]); cut(ins[0], outs[1]); cut(ins[1], outs[1]);
+      }
+    }
+  }
+  var nv = out.length / 3;
+  if (!nv) { say('등고면: 풍속 ' + thr + ' m/s 이상인 영역이 없습니다.'); return; }
+  var posArr = new Float64Array(out), nor = new Float32Array(out.length), idx = new Uint32Array(nv);
+  for (var v = 0; v < nv; v += 3) {  // 삼각형별 법선
+    var o = 3 * v, ax = posArr[o+3] - posArr[o], ay = posArr[o+4] - posArr[o+1], az = posArr[o+5] - posArr[o+2];
+    var bx = posArr[o+6] - posArr[o], by = posArr[o+7] - posArr[o+1], bz = posArr[o+8] - posArr[o+2];
+    var nxv = ay * bz - az * by, nyv = az * bx - ax * bz, nzv = ax * by - ay * bx, len = Math.hypot(nxv, nyv, nzv) || 1;
+    for (var m = 0; m < 3; m++) { nor[o + 3*m] = nxv / len; nor[o + 3*m + 1] = nyv / len; nor[o + 3*m + 2] = nzv / len; idx[v + m] = v + m; }
+  }
+  var geom = new C.Geometry({
+    attributes: { position: new C.GeometryAttribute({ componentDatatype: C.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: posArr }),
+                  normal:   new C.GeometryAttribute({ componentDatatype: C.ComponentDatatype.FLOAT,  componentsPerAttribute: 3, values: nor }) },
+    indices: idx, primitiveType: C.PrimitiveType.TRIANGLES, boundingSphere: C.BoundingSphere.fromVertices(posArr) });
+  isoPrim = viewer.scene.primitives.add(new C.Primitive({
+    geometryInstances: new C.GeometryInstance({ geometry: geom,
+      attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(new C.Color(1.0, 0.25, 0.2, 0.45)) } }),
+    appearance: new C.PerInstanceColorAppearance({ translucent: true, closed: false, faceForward: true }),
+    asynchronous: false }));
+}
+
+/* (6) 풍동 센서: 측정값과 같은 위치의 CFD 풍속 비교 */
+function drawSensors() {
+  var f = F, ds = DS.sensor; ds.entities.removeAll();
+  f.sensors.forEach(function (s) {
+    var fx = (s.lon - f.west) / (f.east - f.west), fy = (s.lat - f.south) / (f.north - f.south);
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+    var cfd = tri(f, f.spd, fx, fy, zToIdx(f, s.z || 0)), err = s.measured > 0 ? (cfd - s.measured) / s.measured : 0, ae = Math.abs(err);
+    var col = ae <= 0.10 ? C.Color.LIME : ae <= 0.25 ? C.Color.ORANGE : C.Color.RED;
+    ds.entities.add({
+      position: pos(fx, fy, (s.z || 0) + 1),
+      point: { pixelSize: 12, color: col, outlineColor: C.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      label: { text: (s.name || '') + '  실험 ' + (+s.measured).toFixed(1) + ' / CFD ' + cfd.toFixed(1) + ' (' + (err >= 0 ? '+' : '') + Math.round(err * 100) + '%)',
+               font: '12px sans-serif', fillColor: C.Color.WHITE, showBackground: true, backgroundColor: new C.Color(0.08, 0.1, 0.13, 0.8),
+               pixelOffset: new C.Cartesian2(0, -20), disableDepthTestDistance: Number.POSITIVE_INFINITY,
+               distanceDisplayCondition: new C.DistanceDisplayCondition(0, 4000) }
+    });
+  });
+}
+
+/* ===== 화면 갱신 ===== */
+function say(t) { document.getElementById('msg').textContent = t || ''; }
+function fmt(v) { return Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2); }
+
+function updateLegend() {
+  var c = VARS[curVar].div ? RAMP_DIV : RAMP_SEQ;
+  document.getElementById('bar').style.background = 'linear-gradient(90deg,' +
+    c.map(function (x) { return 'rgb(' + x.join(',') + ')'; }).join(',') + ')';
+  document.getElementById('title').textContent = VARS[curVar].title;
+  document.getElementById('vminLabel').textContent = fmt(vmin);
+  document.getElementById('vmaxLabel').textContent = fmt(vmax);
+  document.getElementById('zLabel').textContent = '지상 ' + F.z[layerIdx()] + ' m' + (isGroundLayer(layerIdx()) ? ' (지표 표시)' : '');
+}
+function drawLayer() { updateLegend(); drawHeat(); drawLines(); drawGlyphs(); applyToggles(); }
+function drawAll() { computeGround(); computeVar(); drawLayer(); drawIso(); drawSensors(); applyToggles(); }
+
+function applyToggles() {
+  [['chkHeat','heat'],['chkLine','line'],['chkPart','part'],['chkGlyph','glyph'],['chkSensor','sensor']].forEach(function (p) {
+    DS[p[1]].show = document.getElementById(p[0]).checked;
+  });
+  if (isoPrim) isoPrim.show = document.getElementById('chkIso').checked;
+}
+
+function setField(r, name) {
+  F = normalizeField(r); raw = r;
+  var sel = document.getElementById('selVar');
+  Array.prototype.forEach.call(sel.options, function (o) { o.disabled = !!(VARS[o.value].need && !F[VARS[o.value].need]); });
+  if (sel.options[sel.selectedIndex].disabled) sel.value = 'speed';
+  curVar = sel.value;
+  var rz = document.getElementById('rngZ'); rz.max = F.nz - 1; rz.value = 0; rz.disabled = F.nz < 2;
+  document.getElementById('chkIso').disabled = F.nz < 2;
+  document.getElementById('src').textContent = '데이터: ' + name;
+  drawAll();
+  if (F.UrefGuessed) say('U_ref 가 없어 최상층 평균 풍속(' + F.Uref.toFixed(2) + ' m/s)을 기준 풍속으로 사용했습니다.');
+}
+
+var raf = 0;
+function later(fn) { cancelAnimationFrame(raf); raf = requestAnimationFrame(fn); }
+['chkHeat','chkLine','chkPart','chkSensor'].forEach(function (id) { document.getElementById(id).onchange = applyToggles; });
+document.getElementById('chkGlyph').onchange = function () { drawGlyphs(); applyToggles(); };
+document.getElementById('chkIso').onchange = function () { say(''); drawIso(); };
+document.getElementById('numIso').onchange = function () { say(''); drawIso(); };
+document.getElementById('rngZ').oninput = function () { later(drawLayer); };
+document.getElementById('rngAlpha').oninput = function () { later(drawHeat); };
+document.getElementById('selVar').onchange = function () { curVar = this.value; computeVar(); drawLayer(); };
+document.getElementById('numOff').onchange = function () { say(''); drawAll(); };
+document.getElementById('btnGround').onclick = function () { say(''); drawAll(); };
+document.getElementById('btnSave').onclick = function () {
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: 'application/json' }));
+  a.download = 'cfd_field.json'; a.click(); URL.revokeObjectURL(a.href);
+};
+document.getElementById('file').onchange = function (ev) {
+  var file = ev.target.files[0], r = new FileReader();
+  if (!file) return;
+  r.onload = function () {
+    try {
+      say(''); setField(JSON.parse(r.result), file.name);
+      viewer.camera.flyTo({ destination: C.Rectangle.fromDegrees(F.west, F.south, F.east, F.north) });
+    } catch (e) { say('JSON 오류: ' + e.message); }
+  };
+  r.readAsText(file);
+};
+
+/* ===== 지도 시작 ===== */
+function onViewerReady(v) {
+  viewer = v; C = window.Cesium;
+  ['heat','line','part','glyph','sensor'].forEach(function (k) { DS[k] = new C.CustomDataSource(k); viewer.dataSources.add(DS[k]); });
+  setField(makeSampleField(), '샘플(가상 유동장, 실제 CFD·풍동 결과 아님)');
+  var n = 0, t = setInterval(function () {      // 지형이 다 뜨면 높이를 다시 읽어 반영
+    if (!groundPending || ++n > 60) { clearInterval(t); return; }
+    if (viewer.scene.globe.tilesLoaded) { clearInterval(t); computeGround(); drawLayer(); drawIso(); drawSensors(); applyToggles(); }
+  }, 1000);
+}
+
+function startVworld() {
+  if (typeof vw === 'undefined') { say('브이월드 API가 로드되지 않았습니다.\n인증키와 등록 도메인(localhost 등)을 확인하세요.\n→ CesiumJS 단독 미리보기로 전환합니다.'); startStandalone(); return; }
+  var cam = new vw.CameraPosition(new vw.CoordZ(CENTER.lon, CENTER.lat - 0.006, 900), new vw.Direction(0, -50, 0));
+  try {                                   // WebGL 3.0 방식
+    var map = new vw.Map();
+    map.setOption({ mapId: 'vmap', initPosition: cam, logo: true, navigation: true });
+    map.start();
+  } catch (e) {                           // 2.0 방식 폴백
+    new vw.Map('vmap', new vw.MapOptions(vw.BasemapType.GRAPHIC, '', vw.DensityType.FULL, vw.DensityType.BASIC, false, cam, cam));
+  }
+  var tries = 0, timer = setInterval(function () {   // 내부 Cesium 뷰어 준비 대기
+    if (window.ws3d && ws3d.viewer && window.Cesium) { clearInterval(timer); onViewerReady(ws3d.viewer); }
+    else if (++tries > 100) { clearInterval(timer); say('브이월드 3D 뷰어가 30초 안에 준비되지 않았습니다. 인증키·도메인을 확인하세요.'); }
+  }, 300);
+}
+
+function startStandalone() {              // 브이월드 없이 CesiumJS + OSM 배경으로 미리보기
+  if (location.protocol === 'file:') say('파일을 직접 열면(file://) 지도가 그려지지 않습니다.\n이 폴더에서 "python -m http.server 8000" 실행 후\nhttp://localhost:8000/vworld_cfd_demo.html 로 여세요.');
+  var base = 'https://cdnjs.cloudflare.com/ajax/libs/cesium/1.120.0/';
+  window.CESIUM_BASE_URL = base;
+  var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + 'Widgets/widgets.css'; document.head.appendChild(css);
+  var s = document.createElement('script'); s.src = base + 'Cesium.js';
+  s.onerror = function () { say('CesiumJS 를 불러오지 못했습니다. 인터넷 연결을 확인하세요.'); };
+  s.onload = function () {
+    var Cs = window.Cesium;
+    var v = new Cs.Viewer('vmap', { baseLayer: false, baseLayerPicker: false, geocoder: false, timeline: false, animation: false,
+                                    homeButton: false, sceneModePicker: false, navigationHelpButton: false, fullscreenButton: false,
+                                    infoBox: false, selectionIndicator: false });
+    v.imageryLayers.addImageryProvider(new Cs.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }));
+    v.camera.setView({ destination: Cs.Cartesian3.fromDegrees(CENTER.lon, CENTER.lat - 0.0075, 800),
+                       orientation: { heading: 0, pitch: Cs.Math.toRadians(-45), roll: 0 } });
+    document.getElementById('src').insertAdjacentHTML('afterend', '<div class="sub">지도: CesiumJS 단독 미리보기 (브이월드 키 미설정)</div>');
+    onViewerReady(v);
+  };
+  document.head.appendChild(s);
+}
+window.addEventListener('load', USE_VWORLD ? startVworld : startStandalone);
+</script>
+</body>
+</html>
