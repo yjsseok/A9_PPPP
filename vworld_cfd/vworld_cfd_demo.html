@@ -512,8 +512,8 @@ function startVworld() {
 }
 
 function startStandalone() {              // 브이월드 없이 CesiumJS + OSM 배경으로 미리보기
-  if (location.protocol === 'file:') say('파일을 직접 열면(file://) 지도가 그려지지 않습니다.\n이 폴더에서 "python -m http.server 8000" 실행 후\nhttp://localhost:8000/vworld_cfd_demo.html 로 여세요.');
-  var base = 'https://cdnjs.cloudflare.com/ajax/libs/cesium/1.120.0/';
+  // CesiumJS 1.104: 파일을 직접 열어도(file://) 동작하는 버전. 더 새 버전은 웹 서버가 있어야 그려진다.
+  var base = 'https://cdnjs.cloudflare.com/ajax/libs/cesium/1.104.0/';
   window.CESIUM_BASE_URL = base;
   var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + 'Widgets/widgets.css'; document.head.appendChild(css);
   var s = document.createElement('script'); s.src = base + 'Cesium.js';
@@ -523,6 +523,7 @@ function startStandalone() {              // 브이월드 없이 CesiumJS + OSM 
     var v = new Cs.Viewer('vmap', { baseLayer: false, baseLayerPicker: false, geocoder: false, timeline: false, animation: false,
                                     homeButton: false, sceneModePicker: false, navigationHelpButton: false, fullscreenButton: false,
                                     infoBox: false, selectionIndicator: false });
+    v.scene.globe.baseColor = Cs.Color.fromCssColorString('#8c9196');   // 배경지도 타일이 안 올 때의 바탕색
     v.imageryLayers.addImageryProvider(new Cs.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }));
     v.camera.setView({ destination: Cs.Cartesian3.fromDegrees(CENTER.lon, CENTER.lat - 0.0075, 800),
                        orientation: { heading: 0, pitch: Cs.Math.toRadians(-45), roll: 0 } });

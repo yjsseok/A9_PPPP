@@ -13,12 +13,13 @@ OpenFOAM 결과(U, k, p)를 높이별로 브이월드 3D 지도 위에 보여 �
 
 ## 실행
 
-브라우저에서 파일을 직접 열면(file://) 지도가 그려지지 않습니다. 로컬 웹 서버로 여세요.
+키 없이 미리보기만 할 때는 `vworld_cfd_demo.html` 을 더블클릭해서 열면 됩니다.
+파일을 직접 열면 OpenStreetMap 배경지도가 안 나올 수 있고, 브이월드 키는 등록한 주소에서만 동작하므로, 그때는 로컬 웹 서버로 엽니다.
 
 ```
 cd vworld_cfd
 python -m http.server 8000
-# 브라우저: http://localhost:8000/vworld_cfd_demo.html
+# 브라우저 주소창에 직접 입력: http://localhost:8000/vworld_cfd_demo.html
 ```
 
 - **브이월드 지도로 보기**: `vworld_cfd_demo.html` 위쪽의 `VWORLD_KEY` 에 인증키를 넣습니다. 키 발급 시 `localhost` 를 서비스 URL 로 등록해야 합니다.
